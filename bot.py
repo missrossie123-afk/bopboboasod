@@ -8,6 +8,7 @@ from html import escape
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from dotenv import load_dotenv
@@ -138,6 +139,11 @@ async def render(bot, d):
         if d.get("business_connection_id"):
             kwargs["business_connection_id"] = d["business_connection_id"]
         await bot.edit_message_text(**kwargs)
+    except TelegramBadRequest as exc:
+        # Telegram rejects identical edits; this is harmless for the countdown.
+        if "message is not modified" in str(exc).lower():
+            return
+        logging.warning("Не удалось обновить сделку %s: %s", d["id"], exc)
     except Exception as exc:
         logging.warning("Не удалось обновить сделку %s: %s", d["id"], exc)
 
@@ -221,20 +227,42 @@ async def _create_offer(message: Message, bot: Bot, *, business_connection_id: s
     d = await get_deal(deal_id)
     recipient = await get_setting("recipient_username")
 
-    if business_connection_id:
-        sent = await bot.send_message(
-            chat_id=message.chat.id,
-            text=offer_text(d),
-            reply_markup=keyboard_for(d, recipient),
-            disable_web_page_preview=False,
-            business_connection_id=business_connection_id,
+    try:
+        if business_connection_id:
+            sent = await bot.send_message(
+                chat_id=message.chat.id,
+                text=offer_text(d),
+                reply_markup=keyboard_for(d, recipient),
+                disable_web_page_preview=False,
+                business_connection_id=business_connection_id,
+            )
+        else:
+            sent = await message.answer(
+                offer_text(d),
+                reply_markup=keyboard_for(d, recipient),
+                disable_web_page_preview=False,
+            )
+    except Exception as exc:
+        # PEER_FLOOD is a Telegram-side anti-spam/rate restriction.
+        # Do not retry automatically; repeated sends can make the restriction worse.
+        error_text = str(exc).upper()
+        if "PEER_FLOOD" in error_text:
+            logging.error(
+                "Telegram PEER_FLOOD while sending offer; no retry. "
+                "Deal %s marked CANCELLED. Pause sending and wait for Telegram restriction to clear.",
+                deal_id,
+            )
+        else:
+            logging.exception("Could not send offer for deal %s; marking it CANCELLED", deal_id)
+        await update_deal(
+            deal_id,
+            status="CANCELLED",
+            verification_note=("Telegram blocked the send with PEER_FLOOD." if "PEER_FLOOD" in error_text
+                              else f"Send failed: {str(exc)[:300]}"),
         )
-    else:
-        sent = await message.answer(
-            offer_text(d),
-            reply_markup=keyboard_for(d, recipient),
-            disable_web_page_preview=False,
-        )
+        return
+
+    # Save a real Telegram message ID only after Telegram confirms the send.
     await update_deal(deal_id, message_id=sent.message_id)
 
 
