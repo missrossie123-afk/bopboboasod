@@ -67,8 +67,6 @@ EMOJI_GIFT = "6032937473162614352"
 EMOJI_STAR = "5406812184359507637"
 EMOJI_ACCEPT = "5776375003280838798"
 EMOJI_CANCEL = "5778527486270770928"
-EMOJI_TRANSFER_BUTTON = "5875465628285931233"
-EMOJI_VERIFY_BUTTON = "5874960879434338403"
 
 def tg_emoji(custom_id, fallback):
     return f'<tg-emoji emoji-id="{custom_id}">{fallback}</tg-emoji>'
@@ -115,56 +113,33 @@ def keyboard_for(d, recipient=None):
         username = (recipient or "").strip().lstrip("@")
         transfer_url = f"https://t.me/{username}" if username else "https://t.me/"
         return InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="Передать", url=transfer_url, icon_custom_emoji_id=EMOJI_TRANSFER_BUTTON),
-            InlineKeyboardButton(text="Проверить", callback_data=f"verify:{deal_id}", icon_custom_emoji_id=EMOJI_VERIFY_BUTTON)
+            InlineKeyboardButton(text="🎁 Передать", url=transfer_url),
+            InlineKeyboardButton(text="🔎 Проверить", callback_data=f"verify:{deal_id}")
         ]])
     return None
 
 async def is_admin(uid):
     return uid in ADMIN_IDS or await list_admins(uid)
 
-async def render(bot, d, *, fallback_send=False):
+async def render(bot, d):
+    # The ticker can see a new deal before send_message returns its message_id.
+    if not d or not d.get("message_id") or int(d["message_id"]) <= 0:
+        return
     recipient = await get_setting("recipient_username")
-    kwargs = {
-        "chat_id": d["chat_id"],
-        "message_id": d["message_id"],
-        "text": offer_text(d),
-        "reply_markup": keyboard_for(d, recipient),
-        "disable_web_page_preview": False,
-    }
-    # Business messages must be edited through the exact connection that sent them.
-    connection_id = d.get("business_connection_id")
-    if connection_id:
-        kwargs["business_connection_id"] = connection_id
     try:
+        kwargs = {
+            "chat_id": d["chat_id"],
+            "message_id": d["message_id"],
+            "text": offer_text(d),
+            "reply_markup": keyboard_for(d, recipient),
+            "disable_web_page_preview": False,
+        }
+        # Business messages are edited using their original connection.
+        if d.get("business_connection_id"):
+            kwargs["business_connection_id"] = d["business_connection_id"]
         await bot.edit_message_text(**kwargs)
-        return True
     except Exception as exc:
-        logging.exception(
-            "Edit failed: deal_id=%s chat_id=%s message_id=%s business=%s error=%r",
-            d.get("id"), d.get("chat_id"), d.get("message_id"), bool(connection_id), exc
-        )
-        # If Telegram refuses to edit the old Business message, try sending a fresh
-        # status message only after a user action. Never do this from the minute ticker,
-        # otherwise an edit restriction could cause repeated messages every minute.
-        if fallback_send and connection_id:
-            try:
-                sent = await bot.send_message(
-                    chat_id=d["chat_id"],
-                    text=offer_text(d),
-                    reply_markup=keyboard_for(d, recipient),
-                    disable_web_page_preview=False,
-                    business_connection_id=connection_id,
-                )
-                await update_deal(d["id"], message_id=sent.message_id)
-                logging.info("Sent replacement Business status message for deal %s", d["id"])
-                return True
-            except Exception as send_exc:
-                logging.exception(
-                    "Replacement Business send failed: deal_id=%s chat_id=%s connection=%s error=%r",
-                    d.get("id"), d.get("chat_id"), connection_id, send_exc
-                )
-        return False
+        logging.warning("Не удалось обновить сделку %s: %s", d["id"], exc)
 
 @router.message(CommandStart())
 async def start(message: Message):
@@ -278,55 +253,42 @@ async def create_business_offer(message: Message, bot: Bot):
 
 @router.callback_query(F.data.startswith(("accept:", "reject:", "verify:")))
 async def callbacks(call: CallbackQuery, bot: Bot):
-    # Acknowledge the callback immediately. Telegram expires callback queries quickly,
-    # so do not wait for database or Bot API operations before answering it.
+    # Acknowledge immediately; database and edit calls may take longer than Telegram's callback window.
     try:
         await call.answer()
     except Exception as exc:
-        logging.warning("Callback acknowledgement failed: %r", exc)
+        logging.warning("Callback acknowledgement failed (continuing): %r", exc)
 
     try:
         action, raw_id = (call.data or "").split(":", 1)
         deal_id = int(raw_id)
     except Exception:
-        logging.warning("Malformed callback data: %r", call.data)
+        logging.warning("Invalid callback data: %r", call.data)
         return
 
-    try:
-        d = await get_deal(deal_id)
-    except Exception:
-        logging.exception("Database error reading deal_id=%s", deal_id)
-        return
-
+    d = await get_deal(deal_id)
     if not d:
         logging.error(
             "Deal not found for callback: deal_id=%s callback_message_id=%s chat_id=%s. "
-            "Check persistent DB/volume and DB_PATH; the bot may have restarted with an empty SQLite DB.",
+            "Check persistent DB/volume and DB_PATH.",
             deal_id,
-            getattr(call.message, "message_id", None),
-            getattr(getattr(call.message, "chat", None), "id", None),
+            getattr(getattr(call, "message", None), "message_id", None),
+            getattr(getattr(call, "message", None), "chat", None).id
+            if getattr(call, "message", None) and getattr(call.message, "chat", None) else None,
         )
-        # The callback is already acknowledged, so do not call call.answer() again.
-        if call.message:
-            try:
-                await call.message.answer(
-                    "⚠️ Сделка не найдена в базе данных. Проверь постоянное хранилище SQLite (DB_PATH/volume)."
-                )
-            except Exception as exc:
-                logging.warning("Could not send missing-deal notice: %r", exc)
         return
 
     if d["status"] == "PENDING" and utcnow() >= datetime.fromisoformat(d["expires_at"]):
         await update_deal(deal_id, status="EXPIRED")
-        await render(bot, await get_deal(deal_id), fallback_send=True)
+        await render(bot, await get_deal(deal_id))
         return
 
     if action == "accept":
         if d["status"] != "PENDING":
             return
-        # User asked that they may accept their own offer as well; no creator restriction.
+        # Creator is allowed to accept their own offer as requested.
         await update_deal(deal_id, status="ACCEPTED", accepted_by=call.from_user.id)
-        await render(bot, await get_deal(deal_id), fallback_send=True)
+        await render(bot, await get_deal(deal_id))
         return
 
     if action == "reject":
@@ -334,7 +296,7 @@ async def callbacks(call: CallbackQuery, bot: Bot):
             return
         new_status = "CANCELLED" if call.from_user.id == d["creator_id"] else "REJECTED"
         await update_deal(deal_id, status=new_status, rejected_by=call.from_user.id)
-        await render(bot, await get_deal(deal_id), fallback_send=True)
+        await render(bot, await get_deal(deal_id))
         return
 
     if action == "verify":
@@ -344,21 +306,11 @@ async def callbacks(call: CallbackQuery, bot: Bot):
         result = await verify_gift_transfer(d["gift_url"], recipient, d)
         if result.status == VerificationStatus.CONFIRMED:
             await update_deal(deal_id, status="COMPLETED", verification_note=result.message)
-            await render(bot, await get_deal(deal_id), fallback_send=True)
+            await render(bot, await get_deal(deal_id))
         elif result.status == VerificationStatus.NOT_FOUND:
-            logging.info("Gift transfer not verified yet: deal_id=%s", deal_id)
-            if call.message:
-                try:
-                    await call.message.answer("Подарок пока не подтверждён. Передайте его получателю и попробуйте снова.")
-                except Exception as exc:
-                    logging.warning("Could not send verification status: %r", exc)
+            logging.info("Gift transfer not found yet for deal_id=%s", deal_id)
         else:
-            logging.warning("Gift verification unavailable: deal_id=%s note=%s", deal_id, result.message)
-            if call.message:
-                try:
-                    await call.message.answer("Не удалось достоверно проверить передачу. Сделка не отмечена завершённой.")
-                except Exception as exc:
-                    logging.warning("Could not send verification status: %r", exc)
+            logging.warning("Could not verify transfer for deal_id=%s: %s", deal_id, result.message)
 
 async def ticker(bot):
     while True:
@@ -366,7 +318,8 @@ async def ticker(bot):
         await expire_pending_deals(now.isoformat())
         deals = await get_active_deals()
         for d in deals:
-            await render(bot, d)  # refreshes countdown every minute
+            if d.get("message_id") and int(d["message_id"]) > 0:
+                await render(bot, d)  # refreshes countdown every minute
         await asyncio.sleep(60)
 
 async def main():
