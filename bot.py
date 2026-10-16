@@ -228,13 +228,14 @@ async def _create_offer(message: Message, bot: Bot, *, business_connection_id: s
     parsed = parse_offer(message.text or "")
     if not parsed:
         return
-    if sending_paused():
-        logging.warning("Отправка на паузе (PEER_FLOOD) до %s — оффер пропущен", _send_paused_until)
-        return
-    if chat_throttled(message.chat.id):
-        logging.info("Chat %s: слишком частые офферы, пропуск", message.chat.id)
-        return
-    _last_send_by_chat[message.chat.id] = utcnow()
+    if not business_connection_id:
+        if sending_paused():
+            logging.warning("Отправка на паузе (PEER_FLOOD) до %s — оффер пропущен", _send_paused_until)
+            return
+        if chat_throttled(message.chat.id):
+            logging.info("Chat %s: слишком частые офферы, пропуск", message.chat.id)
+            return
+        _last_send_by_chat[message.chat.id] = utcnow()
  
     expiry = utcnow() + timedelta(hours=DEAL_HOURS)
     creator = message.from_user.full_name or message.from_user.username or "Пользователь"
@@ -254,13 +255,17 @@ async def _create_offer(message: Message, bot: Bot, *, business_connection_id: s
  
     try:
         if business_connection_id:
-            sent = await bot.send_message(
+            # Не отправляем новое сообщение (его считают спамом с вашего аккаунта),
+            # а превращаем ваше исходное сообщение в оффер.
+            await bot.edit_message_text(
                 chat_id=message.chat.id,
+                message_id=message.message_id,
                 text=offer_text(d),
                 reply_markup=keyboard_for(d, recipient),
                 disable_web_page_preview=False,
                 business_connection_id=business_connection_id,
             )
+            sent = message  # message_id исходного сообщения сохраняется как id оффера
         else:
             sent = await message.answer(
                 offer_text(d),
