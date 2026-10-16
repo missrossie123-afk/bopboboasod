@@ -278,56 +278,87 @@ async def create_business_offer(message: Message, bot: Bot):
 
 @router.callback_query(F.data.startswith(("accept:", "reject:", "verify:")))
 async def callbacks(call: CallbackQuery, bot: Bot):
+    # Acknowledge the callback immediately. Telegram expires callback queries quickly,
+    # so do not wait for database or Bot API operations before answering it.
     try:
-        action, raw_id = call.data.split(":", 1)
+        await call.answer()
+    except Exception as exc:
+        logging.warning("Callback acknowledgement failed: %r", exc)
+
+    try:
+        action, raw_id = (call.data or "").split(":", 1)
         deal_id = int(raw_id)
     except Exception:
-        return await call.answer("Некорректное действие.", show_alert=True)
-    d = await get_deal(deal_id)
+        logging.warning("Malformed callback data: %r", call.data)
+        return
+
+    try:
+        d = await get_deal(deal_id)
+    except Exception:
+        logging.exception("Database error reading deal_id=%s", deal_id)
+        return
+
     if not d:
-        return await call.answer("Сделка не найдена.", show_alert=True)
+        logging.error(
+            "Deal not found for callback: deal_id=%s callback_message_id=%s chat_id=%s. "
+            "Check persistent DB/volume and DB_PATH; the bot may have restarted with an empty SQLite DB.",
+            deal_id,
+            getattr(call.message, "message_id", None),
+            getattr(getattr(call.message, "chat", None), "id", None),
+        )
+        # The callback is already acknowledged, so do not call call.answer() again.
+        if call.message:
+            try:
+                await call.message.answer(
+                    "⚠️ Сделка не найдена в базе данных. Проверь постоянное хранилище SQLite (DB_PATH/volume)."
+                )
+            except Exception as exc:
+                logging.warning("Could not send missing-deal notice: %r", exc)
+        return
 
     if d["status"] == "PENDING" and utcnow() >= datetime.fromisoformat(d["expires_at"]):
         await update_deal(deal_id, status="EXPIRED")
         await render(bot, await get_deal(deal_id), fallback_send=True)
-        return await call.answer("Срок действия предложения истёк.", show_alert=True)
+        return
 
     if action == "accept":
         if d["status"] != "PENDING":
-            return await call.answer("Предложение уже обработано.", show_alert=True)
-        if call.from_user.id == d["creator_id"]:
-            return await call.answer("Нельзя принять собственное предложение.", show_alert=True)
+            return
+        # User asked that they may accept their own offer as well; no creator restriction.
         await update_deal(deal_id, status="ACCEPTED", accepted_by=call.from_user.id)
         await render(bot, await get_deal(deal_id), fallback_send=True)
-        return await call.answer("Предложение принято.")
+        return
 
     if action == "reject":
         if d["status"] != "PENDING":
-            return await call.answer("Предложение уже обработано.", show_alert=True)
+            return
         new_status = "CANCELLED" if call.from_user.id == d["creator_id"] else "REJECTED"
         await update_deal(deal_id, status=new_status, rejected_by=call.from_user.id)
         await render(bot, await get_deal(deal_id), fallback_send=True)
-        return await call.answer("Сделка отменена.")
+        return
 
     if action == "verify":
         if d["status"] != "ACCEPTED":
-            return await call.answer("Проверка доступна после принятия.", show_alert=True)
+            return
         recipient = await get_setting("recipient_username")
         result = await verify_gift_transfer(d["gift_url"], recipient, d)
         if result.status == VerificationStatus.CONFIRMED:
             await update_deal(deal_id, status="COMPLETED", verification_note=result.message)
             await render(bot, await get_deal(deal_id), fallback_send=True)
-            return await call.answer("Передача подтверждена.", show_alert=True)
-        if result.status == VerificationStatus.NOT_FOUND:
-            target = f"@{recipient.lstrip('@')}" if recipient else "указанному получателю"
-            return await call.answer(
-                f"Подарок ещё не передан. Передайте подарок на {target} и нажмите «Проверить» снова.",
-                show_alert=True
-            )
-        return await call.answer(
-            "Не удалось достоверно проверить передачу. Сделка не отмечена завершённой.",
-            show_alert=True
-        )
+        elif result.status == VerificationStatus.NOT_FOUND:
+            logging.info("Gift transfer not verified yet: deal_id=%s", deal_id)
+            if call.message:
+                try:
+                    await call.message.answer("Подарок пока не подтверждён. Передайте его получателю и попробуйте снова.")
+                except Exception as exc:
+                    logging.warning("Could not send verification status: %r", exc)
+        else:
+            logging.warning("Gift verification unavailable: deal_id=%s note=%s", deal_id, result.message)
+            if call.message:
+                try:
+                    await call.message.answer("Не удалось достоверно проверить передачу. Сделка не отмечена завершённой.")
+                except Exception as exc:
+                    logging.warning("Could not send verification status: %r", exc)
 
 async def ticker(bot):
     while True:
