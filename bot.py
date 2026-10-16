@@ -124,11 +124,17 @@ async def is_admin(uid):
 async def render(bot, d):
     recipient = await get_setting("recipient_username")
     try:
-        await bot.edit_message_text(
-            chat_id=d["chat_id"], message_id=d["message_id"],
-            text=offer_text(d), reply_markup=keyboard_for(d, recipient),
-            disable_web_page_preview=False
-        )
+        kwargs = {
+            "chat_id": d["chat_id"],
+            "message_id": d["message_id"],
+            "text": offer_text(d),
+            "reply_markup": keyboard_for(d, recipient),
+            "disable_web_page_preview": False,
+        }
+        # Business messages are edited using their original connection.
+        if d.get("business_connection_id"):
+            kwargs["business_connection_id"] = d["business_connection_id"]
+        await bot.edit_message_text(**kwargs)
     except Exception as exc:
         logging.warning("Не удалось обновить сделку %s: %s", d["id"], exc)
 
@@ -186,27 +192,61 @@ async def deladmin_cmd(message: Message):
     await remove_admin(int(parts[1]))
     await message.answer("✅ Администратор удалён.")
 
-@router.message(F.text)
-async def create_offer(message: Message, bot: Bot):
-    if message.chat.type == "private" or not message.from_user or message.from_user.is_bot:
+async def _create_offer(message: Message, bot: Bot, *, business_connection_id: str | None = None):
+    if not message.from_user or message.from_user.is_bot:
         return
-    parsed = parse_offer(message.text)
+    # Ignore private messages only in the ordinary bot chat workflow.
+    if not business_connection_id and message.chat.type == "private":
+        return
+    parsed = parse_offer(message.text or "")
     if not parsed:
         return
+
     expiry = utcnow() + timedelta(hours=DEAL_HOURS)
     creator = message.from_user.full_name or message.from_user.username or "Пользователь"
     deal_id = await create_deal(
-        chat_id=message.chat.id, message_id=0, creator_id=message.from_user.id,
-        creator_name=creator, gift_url=parsed["url"], gift_title=parsed["title"],
-        amount=parsed["amount"], expires_at=iso(expiry)
+        chat_id=message.chat.id,
+        message_id=0,
+        business_connection_id=business_connection_id,
+        creator_id=message.from_user.id,
+        creator_name=creator,
+        gift_url=parsed["url"],
+        gift_title=parsed["title"],
+        amount=parsed["amount"],
+        expires_at=iso(expiry),
     )
     d = await get_deal(deal_id)
     recipient = await get_setting("recipient_username")
-    sent = await message.answer(
-        offer_text(d), reply_markup=keyboard_for(d, recipient),
-        disable_web_page_preview=False
-    )
+
+    if business_connection_id:
+        sent = await bot.send_message(
+            chat_id=message.chat.id,
+            text=offer_text(d),
+            reply_markup=keyboard_for(d, recipient),
+            disable_web_page_preview=False,
+            business_connection_id=business_connection_id,
+        )
+    else:
+        sent = await message.answer(
+            offer_text(d),
+            reply_markup=keyboard_for(d, recipient),
+            disable_web_page_preview=False,
+        )
     await update_deal(deal_id, message_id=sent.message_id)
+
+
+@router.message(F.text)
+async def create_offer(message: Message, bot: Bot):
+    await _create_offer(message, bot)
+
+
+@router.business_message(F.text)
+async def create_business_offer(message: Message, bot: Bot):
+    connection_id = getattr(message, "business_connection_id", None)
+    if not connection_id:
+        logging.warning("Получено business_message без business_connection_id")
+        return
+    await _create_offer(message, bot, business_connection_id=connection_id)
 
 @router.callback_query(F.data.startswith(("accept:", "reject:", "verify:")))
 async def callbacks(call: CallbackQuery, bot: Bot):
@@ -281,7 +321,7 @@ async def main():
         BotCommand(command="admin", description="Настройки")
     ])
     asyncio.create_task(ticker(bot))
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":
     asyncio.run(main())

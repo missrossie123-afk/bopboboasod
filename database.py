@@ -27,15 +27,21 @@ CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY);
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA)
+        # Safe migration for databases created before Business support.
+        cur = await db.execute("PRAGMA table_info(deals)")
+        columns = {row[1] for row in await cur.fetchall()}
+        if "business_connection_id" not in columns:
+            await db.execute("ALTER TABLE deals ADD COLUMN business_connection_id TEXT")
         await db.commit()
 
 async def create_deal(**k):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
-            """INSERT INTO deals(chat_id,message_id,creator_id,creator_name,gift_url,gift_title,amount,expires_at)
-            VALUES(?,?,?,?,?,?,?,?)""",
-            (k["chat_id"], k.get("message_id", 0), k["creator_id"], k["creator_name"],
-             k["gift_url"], k["gift_title"], k["amount"], k["expires_at"])
+            """INSERT INTO deals(chat_id,message_id,business_connection_id,creator_id,creator_name,gift_url,gift_title,amount,expires_at)
+            VALUES(?,?,?,?,?,?,?,?,?)""",
+            (k["chat_id"], k.get("message_id", 0), k.get("business_connection_id"),
+             k["creator_id"], k["creator_name"], k["gift_url"], k["gift_title"],
+             k["amount"], k["expires_at"])
         )
         await db.commit()
         return cur.lastrowid
@@ -48,7 +54,7 @@ async def get_deal(deal_id):
         return dict(row) if row else None
 
 async def update_deal(deal_id, **kwargs):
-    allowed = {"message_id", "status", "accepted_by", "rejected_by", "verification_note"}
+    allowed = {"message_id", "business_connection_id", "status", "accepted_by", "rejected_by", "verification_note"}
     pairs = [(k, v) for k, v in kwargs.items() if k in allowed]
     if not pairs:
         return
