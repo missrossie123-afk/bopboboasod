@@ -4,7 +4,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from html import escape
-
+ 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -12,30 +12,43 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from dotenv import load_dotenv
-
+ 
 from database import (
     init_db, create_deal, get_deal, update_deal, set_setting, get_setting,
     list_admins, add_admin, remove_admin, get_active_deals, expire_pending_deals
 )
 from verifier import verify_gift_transfer, VerificationStatus
-
+ 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
 DEAL_HOURS = int(os.getenv("DEAL_HOURS", "24"))
 if not BOT_TOKEN:
     raise RuntimeError("Укажите BOT_TOKEN в .env")
-
+ 
 router = Router()
 URL_RE = re.compile(r"https://t\.me/nft/[A-Za-z0-9_-]+", re.I)
 AMOUNT_RE = re.compile(r"(?<!\w)(\d{1,12})\s*(?:⭐️?|stars?)", re.I)
-
+ 
 def utcnow():
     return datetime.now(timezone.utc)
-
+ 
+# --- Защита от PEER_FLOOD ---------------------------------------------------
+FLOOD_PAUSE_MIN = int(os.getenv("FLOOD_PAUSE_MIN", "30"))   # пауза после PEER_FLOOD
+CHAT_COOLDOWN_SEC = int(os.getenv("CHAT_COOLDOWN_SEC", "20"))  # мин. интервал между офферами в одном чате
+_send_paused_until = None
+_last_send_by_chat = {}
+ 
+def sending_paused():
+    return _send_paused_until is not None and utcnow() < _send_paused_until
+ 
+def chat_throttled(chat_id):
+    last = _last_send_by_chat.get(chat_id)
+    return last is not None and (utcnow() - last).total_seconds() < CHAT_COOLDOWN_SEC
+ 
 def iso(dt):
     return dt.astimezone(timezone.utc).isoformat()
-
+ 
 def parse_offer(text: str):
     um = URL_RE.search(text or "")
     am = AMOUNT_RE.search(text or "")
@@ -52,7 +65,7 @@ def parse_offer(text: str):
     if number:
         title += f" #{number.group(1)}"
     return {"url": url, "amount": amount, "title": title}
-
+ 
 def remaining(expires_at):
     try:
         end = datetime.fromisoformat(expires_at)
@@ -62,16 +75,16 @@ def remaining(expires_at):
     hours, sec = divmod(sec, 3600)
     mins = sec // 60
     return f"{hours} ч. {mins:02d} мин."
-
+ 
 # Telegram custom emoji IDs supplied for this bot.
 EMOJI_GIFT = "6032937473162614352"
 EMOJI_STAR = "5406812184359507637"
 EMOJI_ACCEPT = "5776375003280838798"
 EMOJI_CANCEL = "5778527486270770928"
-
+ 
 def tg_emoji(custom_id, fallback):
     return f'<tg-emoji emoji-id="{custom_id}">{fallback}</tg-emoji>'
-
+ 
 def offer_text(d):
     gift_emoji = tg_emoji(EMOJI_GIFT, "🎁")
     star_emoji = tg_emoji(EMOJI_STAR, "⭐")
@@ -102,7 +115,7 @@ def offer_text(d):
     if d["status"] == "COMPLETED":
         return f"{accept_emoji} <b>Передача подарка {gift_link} подтверждена проверкой.</b>"
     return "Статус сделки неизвестен."
-
+ 
 def keyboard_for(d, recipient=None):
     deal_id = d["id"]
     if d["status"] == "PENDING":
@@ -118,10 +131,10 @@ def keyboard_for(d, recipient=None):
             InlineKeyboardButton(text="🔎 Проверить", callback_data=f"verify:{deal_id}")
         ]])
     return None
-
+ 
 async def is_admin(uid):
     return uid in ADMIN_IDS or await list_admins(uid)
-
+ 
 async def render(bot, d):
     # The ticker can see a new deal before send_message returns its message_id.
     if not d or not d.get("message_id") or int(d["message_id"]) <= 0:
@@ -146,7 +159,7 @@ async def render(bot, d):
         logging.warning("Не удалось обновить сделку %s: %s", d["id"], exc)
     except Exception as exc:
         logging.warning("Не удалось обновить сделку %s: %s", d["id"], exc)
-
+ 
 @router.message(CommandStart())
 async def start(message: Message):
     await message.answer(
@@ -155,7 +168,7 @@ async def start(message: Message):
         "Создаётся обычное текстовое сообщение с кликабельным названием подарка "
         "и настоящими inline-кнопками. Используйте /admin для настроек."
     )
-
+ 
 @router.message(Command("admin"))
 async def admin(message: Message):
     if not await is_admin(message.from_user.id):
@@ -167,7 +180,7 @@ async def admin(message: Message):
         "/addadmin user_id — добавить администратора (только владелец)\n"
         "/deladmin user_id — удалить администратора (только владелец)"
     )
-
+ 
 @router.message(Command("setrecipient"))
 async def setrecipient(message: Message):
     if not await is_admin(message.from_user.id):
@@ -180,7 +193,7 @@ async def setrecipient(message: Message):
         return await message.reply("Укажите корректный Telegram username.")
     await set_setting("recipient_username", username)
     await message.answer(f"✅ Получатель установлен: @{escape(username)}")
-
+ 
 @router.message(Command("addadmin"))
 async def addadmin_cmd(message: Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -190,7 +203,7 @@ async def addadmin_cmd(message: Message):
         return await message.reply("Формат: /addadmin user_id")
     await add_admin(int(parts[1]))
     await message.answer("✅ Администратор добавлен.")
-
+ 
 @router.message(Command("deladmin"))
 async def deladmin_cmd(message: Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -200,17 +213,29 @@ async def deladmin_cmd(message: Message):
         return await message.reply("Формат: /deladmin user_id")
     await remove_admin(int(parts[1]))
     await message.answer("✅ Администратор удалён.")
-
+ 
 async def _create_offer(message: Message, bot: Bot, *, business_connection_id: str | None = None):
+    global _send_paused_until
     if not message.from_user or message.from_user.is_bot:
         return
     # Ignore private messages only in the ordinary bot chat workflow.
     if not business_connection_id and message.chat.type == "private":
         return
+    # Business-режим: бот пишет ОТ ИМЕНИ вашего личного аккаунта, поэтому
+    # реагируем только на сообщения админов, иначе Telegram режет аккаунт за спам.
+    if business_connection_id and not await is_admin(message.from_user.id):
+        return
     parsed = parse_offer(message.text or "")
     if not parsed:
         return
-
+    if sending_paused():
+        logging.warning("Отправка на паузе (PEER_FLOOD) до %s — оффер пропущен", _send_paused_until)
+        return
+    if chat_throttled(message.chat.id):
+        logging.info("Chat %s: слишком частые офферы, пропуск", message.chat.id)
+        return
+    _last_send_by_chat[message.chat.id] = utcnow()
+ 
     expiry = utcnow() + timedelta(hours=DEAL_HOURS)
     creator = message.from_user.full_name or message.from_user.username or "Пользователь"
     deal_id = await create_deal(
@@ -226,7 +251,7 @@ async def _create_offer(message: Message, bot: Bot, *, business_connection_id: s
     )
     d = await get_deal(deal_id)
     recipient = await get_setting("recipient_username")
-
+ 
     try:
         if business_connection_id:
             sent = await bot.send_message(
@@ -247,6 +272,8 @@ async def _create_offer(message: Message, bot: Bot, *, business_connection_id: s
         # Do not retry automatically; repeated sends can make the restriction worse.
         error_text = str(exc).upper()
         if "PEER_FLOOD" in error_text:
+            _send_paused_until = utcnow() + timedelta(minutes=FLOOD_PAUSE_MIN)
+            logging.error("PEER_FLOOD details (business=%s): %r", bool(business_connection_id), exc)
             logging.error(
                 "Telegram PEER_FLOOD while sending offer; no retry. "
                 "Deal %s marked CANCELLED. Pause sending and wait for Telegram restriction to clear.",
@@ -261,16 +288,16 @@ async def _create_offer(message: Message, bot: Bot, *, business_connection_id: s
                               else f"Send failed: {str(exc)[:300]}"),
         )
         return
-
+ 
     # Save a real Telegram message ID only after Telegram confirms the send.
     await update_deal(deal_id, message_id=sent.message_id)
-
-
+ 
+ 
 @router.message(F.text)
 async def create_offer(message: Message, bot: Bot):
     await _create_offer(message, bot)
-
-
+ 
+ 
 @router.business_message(F.text)
 async def create_business_offer(message: Message, bot: Bot):
     connection_id = getattr(message, "business_connection_id", None)
@@ -278,7 +305,7 @@ async def create_business_offer(message: Message, bot: Bot):
         logging.warning("Получено business_message без business_connection_id")
         return
     await _create_offer(message, bot, business_connection_id=connection_id)
-
+ 
 @router.callback_query(F.data.startswith(("accept:", "reject:", "verify:")))
 async def callbacks(call: CallbackQuery, bot: Bot):
     # Acknowledge immediately; database and edit calls may take longer than Telegram's callback window.
@@ -286,14 +313,14 @@ async def callbacks(call: CallbackQuery, bot: Bot):
         await call.answer()
     except Exception as exc:
         logging.warning("Callback acknowledgement failed (continuing): %r", exc)
-
+ 
     try:
         action, raw_id = (call.data or "").split(":", 1)
         deal_id = int(raw_id)
     except Exception:
         logging.warning("Invalid callback data: %r", call.data)
         return
-
+ 
     d = await get_deal(deal_id)
     if not d:
         logging.error(
@@ -305,12 +332,12 @@ async def callbacks(call: CallbackQuery, bot: Bot):
             if getattr(call, "message", None) and getattr(call.message, "chat", None) else None,
         )
         return
-
+ 
     if d["status"] == "PENDING" and utcnow() >= datetime.fromisoformat(d["expires_at"]):
         await update_deal(deal_id, status="EXPIRED")
         await render(bot, await get_deal(deal_id))
         return
-
+ 
     if action == "accept":
         if d["status"] != "PENDING":
             return
@@ -318,7 +345,7 @@ async def callbacks(call: CallbackQuery, bot: Bot):
         await update_deal(deal_id, status="ACCEPTED", accepted_by=call.from_user.id)
         await render(bot, await get_deal(deal_id))
         return
-
+ 
     if action == "reject":
         if d["status"] != "PENDING":
             return
@@ -326,7 +353,7 @@ async def callbacks(call: CallbackQuery, bot: Bot):
         await update_deal(deal_id, status=new_status, rejected_by=call.from_user.id)
         await render(bot, await get_deal(deal_id))
         return
-
+ 
     if action == "verify":
         if d["status"] != "ACCEPTED":
             return
@@ -339,7 +366,7 @@ async def callbacks(call: CallbackQuery, bot: Bot):
             logging.info("Gift transfer not found yet for deal_id=%s", deal_id)
         else:
             logging.warning("Could not verify transfer for deal_id=%s: %s", deal_id, result.message)
-
+ 
 async def ticker(bot):
     while True:
         now = utcnow()
@@ -349,7 +376,7 @@ async def ticker(bot):
             if d.get("message_id") and int(d["message_id"]) > 0:
                 await render(bot, d)  # refreshes countdown every minute
         await asyncio.sleep(60)
-
+ 
 async def main():
     logging.basicConfig(level=logging.INFO)
     await init_db()
@@ -362,6 +389,6 @@ async def main():
     ])
     asyncio.create_task(ticker(bot))
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-
+ 
 if __name__ == "__main__":
     asyncio.run(main())
