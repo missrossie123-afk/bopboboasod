@@ -123,22 +123,48 @@ def keyboard_for(d, recipient=None):
 async def is_admin(uid):
     return uid in ADMIN_IDS or await list_admins(uid)
 
-async def render(bot, d):
+async def render(bot, d, *, fallback_send=False):
     recipient = await get_setting("recipient_username")
+    kwargs = {
+        "chat_id": d["chat_id"],
+        "message_id": d["message_id"],
+        "text": offer_text(d),
+        "reply_markup": keyboard_for(d, recipient),
+        "disable_web_page_preview": False,
+    }
+    # Business messages must be edited through the exact connection that sent them.
+    connection_id = d.get("business_connection_id")
+    if connection_id:
+        kwargs["business_connection_id"] = connection_id
     try:
-        kwargs = {
-            "chat_id": d["chat_id"],
-            "message_id": d["message_id"],
-            "text": offer_text(d),
-            "reply_markup": keyboard_for(d, recipient),
-            "disable_web_page_preview": False,
-        }
-        # Business messages are edited using their original connection.
-        if d.get("business_connection_id"):
-            kwargs["business_connection_id"] = d["business_connection_id"]
         await bot.edit_message_text(**kwargs)
+        return True
     except Exception as exc:
-        logging.warning("Не удалось обновить сделку %s: %s", d["id"], exc)
+        logging.exception(
+            "Edit failed: deal_id=%s chat_id=%s message_id=%s business=%s error=%r",
+            d.get("id"), d.get("chat_id"), d.get("message_id"), bool(connection_id), exc
+        )
+        # If Telegram refuses to edit the old Business message, try sending a fresh
+        # status message only after a user action. Never do this from the minute ticker,
+        # otherwise an edit restriction could cause repeated messages every minute.
+        if fallback_send and connection_id:
+            try:
+                sent = await bot.send_message(
+                    chat_id=d["chat_id"],
+                    text=offer_text(d),
+                    reply_markup=keyboard_for(d, recipient),
+                    disable_web_page_preview=False,
+                    business_connection_id=connection_id,
+                )
+                await update_deal(d["id"], message_id=sent.message_id)
+                logging.info("Sent replacement Business status message for deal %s", d["id"])
+                return True
+            except Exception as send_exc:
+                logging.exception(
+                    "Replacement Business send failed: deal_id=%s chat_id=%s connection=%s error=%r",
+                    d.get("id"), d.get("chat_id"), connection_id, send_exc
+                )
+        return False
 
 @router.message(CommandStart())
 async def start(message: Message):
@@ -263,7 +289,7 @@ async def callbacks(call: CallbackQuery, bot: Bot):
 
     if d["status"] == "PENDING" and utcnow() >= datetime.fromisoformat(d["expires_at"]):
         await update_deal(deal_id, status="EXPIRED")
-        await render(bot, await get_deal(deal_id))
+        await render(bot, await get_deal(deal_id), fallback_send=True)
         return await call.answer("Срок действия предложения истёк.", show_alert=True)
 
     if action == "accept":
@@ -272,7 +298,7 @@ async def callbacks(call: CallbackQuery, bot: Bot):
         if call.from_user.id == d["creator_id"]:
             return await call.answer("Нельзя принять собственное предложение.", show_alert=True)
         await update_deal(deal_id, status="ACCEPTED", accepted_by=call.from_user.id)
-        await render(bot, await get_deal(deal_id))
+        await render(bot, await get_deal(deal_id), fallback_send=True)
         return await call.answer("Предложение принято.")
 
     if action == "reject":
@@ -280,7 +306,7 @@ async def callbacks(call: CallbackQuery, bot: Bot):
             return await call.answer("Предложение уже обработано.", show_alert=True)
         new_status = "CANCELLED" if call.from_user.id == d["creator_id"] else "REJECTED"
         await update_deal(deal_id, status=new_status, rejected_by=call.from_user.id)
-        await render(bot, await get_deal(deal_id))
+        await render(bot, await get_deal(deal_id), fallback_send=True)
         return await call.answer("Сделка отменена.")
 
     if action == "verify":
@@ -290,7 +316,7 @@ async def callbacks(call: CallbackQuery, bot: Bot):
         result = await verify_gift_transfer(d["gift_url"], recipient, d)
         if result.status == VerificationStatus.CONFIRMED:
             await update_deal(deal_id, status="COMPLETED", verification_note=result.message)
-            await render(bot, await get_deal(deal_id))
+            await render(bot, await get_deal(deal_id), fallback_send=True)
             return await call.answer("Передача подтверждена.", show_alert=True)
         if result.status == VerificationStatus.NOT_FOUND:
             target = f"@{recipient.lstrip('@')}" if recipient else "указанному получателю"
