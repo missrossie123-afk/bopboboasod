@@ -81,6 +81,8 @@ EMOJI_GIFT = "6032937473162614352"
 EMOJI_STAR = "5406812184359507637"
 EMOJI_ACCEPT = "5776375003280838798"
 EMOJI_CANCEL = "5778527486270770928"
+EMOJI_BTN_TRANSFER = "5875465628285931233"  # иконка кнопки «Передать»
+EMOJI_BTN_VERIFY = "5874960879434338403"    # иконка кнопки «Проверить»
  
 def tg_emoji(custom_id, fallback):
     return f'<tg-emoji emoji-id="{custom_id}">{fallback}</tg-emoji>'
@@ -127,8 +129,10 @@ def keyboard_for(d, recipient=None):
         username = (recipient or "").strip().lstrip("@")
         transfer_url = f"https://t.me/{username}" if username else "https://t.me/"
         return InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🎁 Передать", url=transfer_url),
-            InlineKeyboardButton(text="🔎 Проверить", callback_data=f"verify:{deal_id}")
+            InlineKeyboardButton(text="Передать", url=transfer_url,
+                                 icon_custom_emoji_id=EMOJI_BTN_TRANSFER),
+            InlineKeyboardButton(text="Проверить", callback_data=f"verify:{deal_id}",
+                                 icon_custom_emoji_id=EMOJI_BTN_VERIFY)
         ]])
     return None
  
