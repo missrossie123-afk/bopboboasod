@@ -379,7 +379,7 @@ async def business_diag(message: Message, bot: Bot):
         logging.warning("DIAG: не удалось удалить тестовые сообщения: %r", exc)
     try:
         await bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id,
-                                    text="DIAG\n" + "\n".join(results), business_connection_id=cid)
+                                    text="DIAG\n" + "\n".join(results), business_connection_id=cid, parse_mode=None)
     except Exception as exc:
         logging.warning("DIAG: не удалось показать результат: %r", exc)
 
@@ -427,7 +427,7 @@ async def business_diag2(message: Message, bot: Bot):
         logging.warning("DIAG2: не удалось удалить тестовые сообщения: %r", exc)
     try:
         await bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id,
-                                    text="DIAG2\n" + "\n".join(results), business_connection_id=cid)
+                                    text="DIAG2\n" + "\n".join(results), business_connection_id=cid, parse_mode=None)
     except Exception as exc:
         logging.warning("DIAG2: не удалось показать результат: %r", exc)
 
@@ -475,9 +475,57 @@ async def business_diag3(message: Message, bot: Bot):
         logging.warning("DIAG3: не удалось удалить тестовые сообщения: %r", exc)
     try:
         await bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id,
-                                    text="DIAG3\n" + "\n".join(results), business_connection_id=cid)
+                                    text="DIAG3\n" + "\n".join(results), business_connection_id=cid, parse_mode=None)
     except Exception as exc:
         logging.warning("DIAG3: не удалось показать результат: %r", exc)
+
+
+@router.business_message(F.text.func(lambda t: t.strip().lower() == "/diag4"))
+async def business_diag4(message: Message, bot: Bot):
+    """Воспроизводим формат другого бота и добавляем наши отличия по одному. Написать /diag4."""
+    cid = getattr(message, "business_connection_id", None)
+    if not cid or not message.from_user or not await is_admin(message.from_user.id):
+        return
+    gift = "https://t.me/nft/DiamondRing-28438"
+    link = f'<a href="{gift}">Diamond Ring #28438</a>'
+    real = escape(message.from_user.full_name or "Тест")
+    fake = {"id": 0, "status": "PENDING", "gift_url": gift, "gift_title": "Diamond Ring #28438",
+            "amount": 9500, "creator_name": message.from_user.full_name or "Тест",
+            "expires_at": iso(utcnow() + timedelta(hours=DEAL_HOURS))}
+    kb = keyboard_for(fake)
+    tail = "\n\nПредложение действует ещё 5 ч. 59 мин."
+    tests = [
+        ("1 формат другого бота (без жирного, ⭐, «Пользователь»)",
+         dict(text=f"Пользователь предлагает вам\n9500 ⭐ за подарок {link}.{tail}", reply_markup=kb)),
+        ("2 то же + жирный шрифт",
+         dict(text=f"<b>Пользователь предлагает вам</b>\n<b>9500 ⭐ за подарок {link}</b>.{tail}", reply_markup=kb)),
+        ("3 то же с моим реальным именем",
+         dict(text=f"{real} предлагает вам\n9500 ⭐ за подарок {link}.{tail}", reply_markup=kb)),
+        ("4 то же с кастомными эмодзи",
+         dict(text=f"{tg_emoji(EMOJI_GIFT, '🎁')} Пользователь предлагает вам\n9500 {tg_emoji(EMOJI_STAR, '⭐')} за подарок {link}.{tail}", reply_markup=kb)),
+        ("5 мой оффер, имя «Пользователь»", dict(text=offer_text({**fake, "creator_name": "Пользователь"}), reply_markup=kb)),
+        ("6 мой оффер как есть", dict(text=offer_text(fake), reply_markup=kb)),
+    ]
+    results, sent_ids = [], []
+    for name, kw in tests:
+        try:
+            m = await bot.send_message(chat_id=message.chat.id, business_connection_id=cid, **kw)
+            sent_ids.append(m.message_id)
+            results.append(f"✅ {name}")
+        except Exception as exc:
+            results.append(f"❌ {name}: {str(exc)[:60]}")
+        await asyncio.sleep(3)
+    logging.info("DIAG4: %s", " | ".join(results))
+    try:
+        if sent_ids:
+            await bot.delete_business_messages(business_connection_id=cid, message_ids=sent_ids)
+    except Exception as exc:
+        logging.warning("DIAG4: не удалось удалить тестовые сообщения: %r", exc)
+    try:
+        await bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id,
+                                    text="DIAG4\n" + "\n".join(results), business_connection_id=cid, parse_mode=None)
+    except Exception as exc:
+        logging.warning("DIAG4: не удалось показать результат: %r", exc)
 
 
 @router.business_message(F.text)
