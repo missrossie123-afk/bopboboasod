@@ -380,6 +380,54 @@ async def business_diag(message: Message, bot: Bot):
         logging.warning("DIAG: не удалось показать результат: %r", exc)
 
 
+@router.business_message(F.text.func(lambda t: t.strip().lower() == "/diag2"))
+async def business_diag2(message: Message, bot: Bot):
+    """Бисекция: какой элемент оффера вызывает PEER_FLOOD. Написать /diag2 в бизнес-чате."""
+    cid = getattr(message, "business_connection_id", None)
+    if not cid or not message.from_user or not await is_admin(message.from_user.id):
+        return
+    gift = "https://t.me/nft/InstantRamen-181091"
+    user = escape(message.from_user.full_name or "Тест")
+    fake = {"id": 0, "status": "PENDING", "gift_url": gift, "gift_title": "InstantRamen #181091",
+            "amount": 444, "creator_name": message.from_user.full_name or "Тест",
+            "expires_at": iso(utcnow() + timedelta(hours=DEAL_HOURS))}
+    kb = keyboard_for(fake)
+    full = offer_text(fake)
+    plain_emoji = (f"🎁 <b>{user} предлагает вам</b>\n<b>444 ⭐ за подарок "
+                   f'<a href="{gift}">InstantRamen #181091</a></b>\n\nПредложение действует ещё <b>24 ч</b>.')
+    no_link = (f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{user} предлагает вам</b>\n"
+               f"<b>444 {tg_emoji(EMOJI_STAR, '⭐')} за подарок InstantRamen #181091</b>\n\n"
+               f"Предложение действует ещё <b>24 ч</b>.")
+    tests = [
+        ("A оффер без кнопок", dict(text=full)),
+        ("B кнопки «Принять/Отклонить» + короткий текст", dict(text="тест B", reply_markup=kb)),
+        ("C оффер с обычными эмодзи", dict(text=plain_emoji, reply_markup=kb)),
+        ("D оффер без ссылки на подарок", dict(text=no_link, reply_markup=kb)),
+        ("E оффер, превью ссылки выключено", dict(text=full, reply_markup=kb, disable_web_page_preview=True)),
+        ("F текст оффера без разметки", dict(text=re.sub(r"<[^>]+>", "", full), parse_mode=None, reply_markup=kb)),
+    ]
+    results, sent_ids = [], []
+    for name, kw in tests:
+        try:
+            m = await bot.send_message(chat_id=message.chat.id, business_connection_id=cid, **kw)
+            sent_ids.append(m.message_id)
+            results.append(f"✅ {name}")
+        except Exception as exc:
+            results.append(f"❌ {name}: {str(exc)[:60]}")
+        await asyncio.sleep(3)
+    logging.info("DIAG2: %s", " | ".join(results))
+    try:
+        if sent_ids:
+            await bot.delete_business_messages(business_connection_id=cid, message_ids=sent_ids)
+    except Exception as exc:
+        logging.warning("DIAG2: не удалось удалить тестовые сообщения: %r", exc)
+    try:
+        await bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id,
+                                    text="DIAG2\n" + "\n".join(results), business_connection_id=cid)
+    except Exception as exc:
+        logging.warning("DIAG2: не удалось показать результат: %r", exc)
+
+
 @router.business_message(F.text)
 async def create_business_offer(message: Message, bot: Bot):
     connection_id = getattr(message, "business_connection_id", None)
