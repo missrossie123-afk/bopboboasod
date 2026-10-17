@@ -1,62 +1,34 @@
-# OLX Telegram Monitor
+# Text-only Telegram NFT offer bot
 
-Telegram-бот для мониторинга свежих объявлений OLX.ua.
+The bot posts **native Telegram text**, HTML-formatted links, and inline buttons. It does not generate or send an image card. The countdown in pending offers is refreshed every 60 seconds by editing the bot's own message.
 
-## Возможности
-- Несколько отдельных поисков.
-- Ключевые слова или поиск по всей выбранной категории.
-- Категории OLX из API (если OLX отдаёт список категорий).
-- Минус-слова через запятую.
-- Максимальная цена.
-- Сначала альбом фотографий, затем сообщение с описанием и кнопкой на OLX.
-- Пауза/возобновление и удаление поисков.
-- SQLite для сохранения поисков и уже обработанных объявлений между перезапусками.
-
-## Запуск локально
-
-Требуется Python 3.11+.
-
+## Install
+Python 3.11+
 ```bash
 python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS/Linux:
-source .venv/bin/activate
-
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 ```
-
-Создайте бота через @BotFather и скопируйте токен.
-
-**Windows PowerShell:**
-```powershell
-$env:BOT_TOKEN="ВАШ_ТОКЕН"
-python bot.py
-```
-
-**Linux/macOS:**
+Copy `.env.example` to `.env`, set `BOT_TOKEN` and your numeric Telegram ID in `ADMIN_IDS`, then:
 ```bash
-export BOT_TOKEN="ВАШ_ТОКЕН"
 python bot.py
 ```
 
-После запуска откройте бота в Telegram и нажмите `/start`.
+## Group setup
+Create a bot with `@BotFather`, add it to the group, and disable Group Privacy in BotFather if it must read ordinary messages containing a gift link and amount. The bot sends its own offer message because Telegram bots cannot edit a message authored by a regular user.
 
-## Размещение на сервере
+Example:
+`https://t.me/nft/InstantRamen-181091 444 stars`
 
-Запускайте как один постоянно работающий worker/service. Установите `BOT_TOKEN`
-в переменные окружения хостинга. Для сохранения базы `olx_bot.db` нужен постоянный
-диск/volume; без него поиски и история обработанных объявлений могут потеряться
-при пересоздании контейнера.
+## Commands
+- `/admin`
+- `/setrecipient username`
+- `/addadmin user_id` (only IDs in ADMIN_IDS)
+- `/deladmin user_id` (only IDs in ADMIN_IDS)
 
-## Важные ограничения
+## Custom emoji packs
+A pack link such as `https://t.me/addemoji/CryptoBotAssets` does not reveal the custom emoji IDs needed by the Bot API. To use those exact premium/custom emoji, obtain each `custom_emoji_id` from a message containing that emoji and implement Telegram `MessageEntity(type="custom_emoji", custom_emoji_id=...)` entities. Standard ⭐ is used until those IDs are configured.
 
-- Бот использует неофициальный внутренний API OLX.ua. OLX может менять его,
-  ограничивать запросы или временно блокировать доступ; в таком случае сбор
-  объявлений нужно будет адаптировать. Это не гарантированный официальный API.
-- Проверка по умолчанию идёт примерно раз в 45 секунд. Слишком частые запросы
-  повышают риск ограничений со стороны OLX.
-- При первом создании поиска бот помечает найденную выдачу как уже просмотренную
-  и отправляет до 3 подходящих свежих объявлений; далее отправляет только новые.
-- Если OLX не отдаёт цену или фотографии в API, бот не сможет показать их.
-- Не публикуйте токен бота и не добавляйте его в GitHub.
+## Real transfer verification
+The verifier deliberately fails closed. Telegram Bot API has no general endpoint to independently verify gift ownership transfers for arbitrary accounts, so a provider-specific authorized integration is required before a deal can be marked complete.

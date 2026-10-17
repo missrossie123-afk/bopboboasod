@@ -530,34 +530,32 @@ async def business_diag4(message: Message, bot: Bot):
 
 @router.business_message(F.text.func(lambda t: t.strip().lower().startswith("/diag5")))
 async def business_diag5(message: Message, bot: Bot):
-    """/diag5 URL AMOUNT — edit the command message into a live offer (same as mode 1)."""
+    """/diag5 URL AMOUNT — send a NEW offer message, then delete the command."""
     cid = getattr(message, "business_connection_id", None)
     if not cid or not message.from_user or not await is_admin(message.from_user.id):
         return
 
-    # Parse only arguments after /diag5; accepts "444" or "444 stars".
-    args = re.sub(r"^/diag5(?:@\\w+)?\\s*", "", message.text or "", count=1, flags=re.I).strip()
-    parse_input = args if re.search(r"\\bstars?\\b", args, re.I) else f"{args} stars"
+    args = re.sub(r"^/diag5(?:@\w+)?\s*", "", message.text or "", count=1, flags=re.I).strip()
+    parse_input = args if re.search(r"\bstars?\b", args, re.I) else f"{args} stars"
     parsed = parse_offer(parse_input)
     if not parsed:
+        # Leave the command in place if its arguments are invalid, and explain the format.
         try:
-            await bot.edit_message_text(
+            await bot.send_message(
                 chat_id=message.chat.id,
-                message_id=message.message_id,
                 business_connection_id=cid,
                 text="Формат: /diag5 https://t.me/nft/InstantRamen-181091 444",
                 parse_mode=None,
             )
         except Exception as exc:
-            logging.warning("DIAG5: не удалось показать формат: %r", exc)
+            logging.warning("DIAG5: не удалось отправить подсказку формата: %r", exc)
         return
 
-    # Create a real deal record so buttons and countdown work as in the main bot.
     expiry = utcnow() + timedelta(hours=DEAL_HOURS)
     creator = message.from_user.full_name or message.from_user.username or "Пользователь"
     deal_id = await create_deal(
         chat_id=message.chat.id,
-        message_id=message.message_id,
+        message_id=message.message_id,  # replaced with the new offer's ID below
         business_connection_id=cid,
         creator_id=message.from_user.id,
         creator_name=creator,
@@ -569,32 +567,40 @@ async def business_diag5(message: Message, bot: Bot):
     deal = await get_deal(deal_id)
     recipient = await get_setting("recipient_username")
 
-    # Edit the /diag5 command itself into a hidden-link offer (no extra message).
     amount_text = f'{int(parsed["amount"]):,}'.replace(",", " ")
     hidden_text = (
-        f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{escape(creator)} предлагает вам</b>\\n"
+        f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{escape(creator)} предлагает вам</b>\n"
         f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} за подарок "
-        f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a></b>\\n\\n'
+        f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a></b>\n\n'
         f"Предложение действует ещё <b>{remaining(deal['expires_at'])}</b>."
     )
     try:
-        await bot.edit_message_text(
+        # First send the replacement offer. Only after success do we remove the command.
+        sent = await bot.send_message(
             chat_id=message.chat.id,
-            message_id=message.message_id,
             business_connection_id=cid,
             text=hidden_text,
             reply_markup=keyboard_for(deal, recipient),
             disable_web_page_preview=True,
         )
-        await update_deal(deal_id, message_id=message.message_id)
-        logging.info("DIAG5: edited command into deal_id=%s url=%s amount=%s",
-                     deal_id, parsed["url"], parsed["amount"])
+        await update_deal(deal_id, message_id=sent.message_id)
+        try:
+            await bot.delete_message(
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                business_connection_id=cid,
+            )
+        except Exception as exc:
+            # Offer is already posted; don't cancel it if Telegram refuses deletion.
+            logging.warning("DIAG5: offer sent as message_id=%s, but command deletion failed: %r", sent.message_id, exc)
+        logging.info("DIAG5: sent new offer deal_id=%s message_id=%s url=%s amount=%s",
+                     deal_id, sent.message_id, parsed["url"], parsed["amount"])
     except Exception as exc:
-        logging.exception("DIAG5: could not edit command into offer: %r", exc)
+        logging.exception("DIAG5: could not send new offer: %r", exc)
         await update_deal(
             deal_id,
             status="CANCELLED",
-            verification_note=f"Could not edit /diag5 message: {str(exc)[:250]}",
+            verification_note=f"Could not send /diag5 offer: {str(exc)[:250]}",
         )
 
 
