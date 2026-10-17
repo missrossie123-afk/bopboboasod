@@ -351,6 +351,12 @@ async def business_diag(message: Message, bot: Bot):
         ("4 инлайн-кнопки", dict(text="тест 4", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="Кнопка", callback_data="diag")]]))),
     ]
+    # 5: настоящий оффер (тот же текст, разметка и кнопки), но с тестовыми данными
+    fake = {"id": 0, "status": "PENDING", "gift_url": gift, "gift_title": "InstantRamen #181091",
+            "amount": 444, "creator_name": message.from_user.full_name or "Тест",
+            "expires_at": iso(utcnow() + timedelta(hours=DEAL_HOURS))}
+    tests.append(("5 настоящий оффер", dict(text=offer_text(fake), reply_markup=keyboard_for(fake),
+                                            disable_web_page_preview=False)))
     results, sent_ids = [], []
     for name, kw in tests:
         try:
