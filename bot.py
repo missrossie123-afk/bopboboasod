@@ -530,43 +530,72 @@ async def business_diag4(message: Message, bot: Bot):
 
 @router.business_message(F.text.func(lambda t: t.strip().lower().startswith("/diag5")))
 async def business_diag5(message: Message, bot: Bot):
-    """Проверка конкретной ссылки/суммы: /diag5 https://t.me/nft/InstantRamen-181091 444"""
+    """/diag5 URL AMOUNT — edit the command message into a live offer (same as mode 1)."""
     cid = getattr(message, "business_connection_id", None)
     if not cid or not message.from_user or not await is_admin(message.from_user.id):
         return
-    parsed = parse_offer(message.text.replace("/diag5", "", 1).strip() + " stars" if "stars" not in message.text.lower() else message.text.replace("/diag5", "", 1))
+
+    # Parse only arguments after /diag5; accepts "444" or "444 stars".
+    args = re.sub(r"^/diag5(?:@\\w+)?\\s*", "", message.text or "", count=1, flags=re.I).strip()
+    parse_input = args if re.search(r"\\bstars?\\b", args, re.I) else f"{args} stars"
+    parsed = parse_offer(parse_input)
     if not parsed:
-        await bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id, business_connection_id=cid,
-                                    text="Формат: /diag5 https://t.me/nft/InstantRamen-181091 444", parse_mode=None)
-        return
-    fake = {"id": 0, "status": "PENDING", "gift_url": parsed["url"], "gift_title": parsed["title"],
-            "amount": parsed["amount"], "creator_name": message.from_user.full_name or "Тест",
-            "expires_at": iso(utcnow() + timedelta(hours=DEAL_HOURS))}
-    kb = keyboard_for(fake)
-    hidden = (f"{escape(fake['creator_name'])} предлагает вам\n{fake['amount']} ⭐ за подарок "
-              f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a>.\n\nПредложение действует ещё 5 ч.')
-    tests = [("1 оффер как в боте", dict(text=offer_text(fake), reply_markup=kb)),
-             ("2 скрытая ссылка, как у другого бота", dict(text=hidden, reply_markup=kb))]
-    results, sent_ids = [], []
-    for name, kw in tests:
         try:
-            m = await bot.send_message(chat_id=message.chat.id, business_connection_id=cid, **kw)
-            sent_ids.append(m.message_id)
-            results.append(f"✅ {name}")
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                business_connection_id=cid,
+                text="Формат: /diag5 https://t.me/nft/InstantRamen-181091 444",
+                parse_mode=None,
+            )
         except Exception as exc:
-            results.append(f"❌ {name}: {str(exc)[:60]}")
-        await asyncio.sleep(3)
-    logging.info("DIAG5 (%s, %s): %s", parsed["url"], parsed["amount"], " | ".join(results))
+            logging.warning("DIAG5: не удалось показать формат: %r", exc)
+        return
+
+    # Create a real deal record so buttons and countdown work as in the main bot.
+    expiry = utcnow() + timedelta(hours=DEAL_HOURS)
+    creator = message.from_user.full_name or message.from_user.username or "Пользователь"
+    deal_id = await create_deal(
+        chat_id=message.chat.id,
+        message_id=message.message_id,
+        business_connection_id=cid,
+        creator_id=message.from_user.id,
+        creator_name=creator,
+        gift_url=parsed["url"],
+        gift_title=parsed["title"],
+        amount=parsed["amount"],
+        expires_at=iso(expiry),
+    )
+    deal = await get_deal(deal_id)
+    recipient = await get_setting("recipient_username")
+
+    # Edit the /diag5 command itself into a hidden-link offer (no extra message).
+    amount_text = f'{int(parsed["amount"]):,}'.replace(",", " ")
+    hidden_text = (
+        f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{escape(creator)} предлагает вам</b>\\n"
+        f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} за подарок "
+        f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a></b>\\n\\n'
+        f"Предложение действует ещё <b>{remaining(deal['expires_at'])}</b>."
+    )
     try:
-        if sent_ids:
-            await bot.delete_business_messages(business_connection_id=cid, message_ids=sent_ids)
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            business_connection_id=cid,
+            text=hidden_text,
+            reply_markup=keyboard_for(deal, recipient),
+            disable_web_page_preview=True,
+        )
+        await update_deal(deal_id, message_id=message.message_id)
+        logging.info("DIAG5: edited command into deal_id=%s url=%s amount=%s",
+                     deal_id, parsed["url"], parsed["amount"])
     except Exception as exc:
-        logging.warning("DIAG5: не удалось удалить тестовые сообщения: %r", exc)
-    try:
-        await bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id,
-                                    text="DIAG5\n" + "\n".join(results), business_connection_id=cid, parse_mode=None)
-    except Exception as exc:
-        logging.warning("DIAG5: не удалось показать результат: %r", exc)
+        logging.exception("DIAG5: could not edit command into offer: %r", exc)
+        await update_deal(
+            deal_id,
+            status="CANCELLED",
+            verification_note=f"Could not edit /diag5 message: {str(exc)[:250]}",
+        )
 
 
 @router.business_message(F.text)
