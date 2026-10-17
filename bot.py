@@ -74,7 +74,7 @@ def parse_offer(text: str):
         title += f" #{number.group(1)}"
     return {"url": url, "amount": amount, "title": title}
 
-def remaining(expires_at, language="ru"):
+def remaining(expires_at):
     try:
         end = datetime.fromisoformat(expires_at)
         sec = max(0, int((end - utcnow()).total_seconds()))
@@ -82,10 +82,6 @@ def remaining(expires_at, language="ru"):
         sec = 0
     hours, sec = divmod(sec, 3600)
     mins = sec // 60
-    if (language or "ru").lower() == "eng":
-        hour_label = "hr" if hours == 1 else "hrs"
-        min_label = "min" if mins == 1 else "mins"
-        return f"{hours} {hour_label} {mins:02d} {min_label}"
     return f"{hours} ч. {mins:02d} мин."
 
 # Telegram custom emoji IDs supplied for this bot.
@@ -115,11 +111,11 @@ def offer_text(d):
             return (f"{gift_emoji} <b>{user} has made you an offer</b>\n"
                     f"<b>{amount} {star_emoji} for the gift {gift_title}</b>\n"
                     f"{gift_url}\n\n"
-                    f"This offer expires in <b>{remaining(d['expires_at'], lang)}</b>.")
+                    f"This offer expires in <b>{remaining(d['expires_at'])}</b>.")
         return (f"{gift_emoji} <b>{user} предлагает вам</b>\n"
                 f"<b>{amount} {star_emoji} за подарок {gift_title}</b>\n"
                 f"{gift_url}\n\n"
-                f"Предложение действительно ещё <b>{remaining(d['expires_at'], lang)}</b>.")
+                f"Предложение действительно ещё <b>{remaining(d['expires_at'])}</b>.")
     if d["status"] == "ACCEPTED":
         if english:
             return (f"{accept_emoji} <b>Offer accepted</b>\n\n"
@@ -583,10 +579,8 @@ async def business_diag5(message: Message, bot: Bot):
         gift_title=parsed["title"],
         amount=parsed["amount"],
         expires_at=iso(expiry),
-        language=language,
     )
     deal = await get_deal(deal_id)
-    deal["language"] = language
     recipient = await get_setting("recipient_username")
 
     amount_text = f'{int(parsed["amount"]):,}'.replace(",", " ")
@@ -595,14 +589,14 @@ async def business_diag5(message: Message, bot: Bot):
             f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{escape(creator)} has made you an offer</b>\n"
             f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} for the gift "
             f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a></b>\n\n'
-            f"This offer expires in <b>{remaining(deal['expires_at'], language)}</b>."
+            f"This offer expires in <b>{remaining(deal['expires_at'])}</b>."
         )
     else:
         hidden_text = (
             f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{escape(creator)} предлагает вам</b>\n"
             f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} за подарок "
             f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a></b>\n\n'
-            f"Предложение действительно ещё <b>{remaining(deal['expires_at'], language)}</b>."
+            f"Предложение действительно ещё <b>{remaining(deal['expires_at'])}</b>."
         )
     try:
         # First send the replacement offer. Only after success do we remove the command.
