@@ -432,6 +432,54 @@ async def business_diag2(message: Message, bot: Bot):
         logging.warning("DIAG2: не удалось показать результат: %r", exc)
 
 
+@router.business_message(F.text.func(lambda t: t.strip().lower() == "/diag3"))
+async def business_diag3(message: Message, bot: Bot):
+    """Бисекция №2: как показать адрес подарка, чтобы не было PEER_FLOOD. Написать /diag3."""
+    cid = getattr(message, "business_connection_id", None)
+    if not cid or not message.from_user or not await is_admin(message.from_user.id):
+        return
+    gift = "https://t.me/nft/InstantRamen-181091"
+    user = escape(message.from_user.full_name or "Тест")
+    fake = {"id": 0, "status": "PENDING", "gift_url": gift, "gift_title": "InstantRamen #181091",
+            "amount": 444, "creator_name": message.from_user.full_name or "Тест",
+            "expires_at": iso(utcnow() + timedelta(hours=DEAL_HOURS))}
+    kb = keyboard_for(fake)
+    url_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Принять", callback_data="diag"), InlineKeyboardButton(text="Отклонить", callback_data="diag")],
+        [InlineKeyboardButton(text="Открыть подарок", url=gift)]])
+    tests = [
+        ("1 URL + 444 ⭐ простым текстом", dict(text=f"444 ⭐ за подарок InstantRamen\n{gift}", parse_mode=None)),
+        ("2 адрес только в URL-кнопке", dict(text=f"{user} предлагает вам\n444 ⭐ за подарок InstantRamen #181091",
+                                           parse_mode=None, reply_markup=url_kb)),
+        ("3 адрес в <code>", dict(text=f"{user} предлагает вам\n444 ⭐ за подарок InstantRamen #181091\n<code>{gift}</code>",
+                                reply_markup=kb)),
+        ("4 адрес без https://", dict(text=f"{user} предлагает вам\n444 ⭐ за подарок InstantRamen #181091\n"
+                                     f"{gift.replace('https://', '')}", parse_mode=None, reply_markup=kb)),
+        ("5 URL без слов «предлагает вам»", dict(text=f"444 ⭐ за подарок InstantRamen #181091\n{gift}", parse_mode=None, reply_markup=kb)),
+        ("6 URL + «предлагает вам», без суммы", dict(text=f"{user} предлагает вам подарок\n{gift}", parse_mode=None, reply_markup=kb)),
+    ]
+    results, sent_ids = [], []
+    for name, kw in tests:
+        try:
+            m = await bot.send_message(chat_id=message.chat.id, business_connection_id=cid, **kw)
+            sent_ids.append(m.message_id)
+            results.append(f"✅ {name}")
+        except Exception as exc:
+            results.append(f"❌ {name}: {str(exc)[:60]}")
+        await asyncio.sleep(3)
+    logging.info("DIAG3: %s", " | ".join(results))
+    try:
+        if sent_ids:
+            await bot.delete_business_messages(business_connection_id=cid, message_ids=sent_ids)
+    except Exception as exc:
+        logging.warning("DIAG3: не удалось удалить тестовые сообщения: %r", exc)
+    try:
+        await bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id,
+                                    text="DIAG3\n" + "\n".join(results), business_connection_id=cid)
+    except Exception as exc:
+        logging.warning("DIAG3: не удалось показать результат: %r", exc)
+
+
 @router.business_message(F.text)
 async def create_business_offer(message: Message, bot: Bot):
     connection_id = getattr(message, "business_connection_id", None)
