@@ -528,6 +528,47 @@ async def business_diag4(message: Message, bot: Bot):
         logging.warning("DIAG4: не удалось показать результат: %r", exc)
 
 
+@router.business_message(F.text.func(lambda t: t.strip().lower().startswith("/diag5")))
+async def business_diag5(message: Message, bot: Bot):
+    """Проверка конкретной ссылки/суммы: /diag5 https://t.me/nft/InstantRamen-181091 444"""
+    cid = getattr(message, "business_connection_id", None)
+    if not cid or not message.from_user or not await is_admin(message.from_user.id):
+        return
+    parsed = parse_offer(message.text.replace("/diag5", "", 1).strip() + " stars" if "stars" not in message.text.lower() else message.text.replace("/diag5", "", 1))
+    if not parsed:
+        await bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id, business_connection_id=cid,
+                                    text="Формат: /diag5 https://t.me/nft/InstantRamen-181091 444", parse_mode=None)
+        return
+    fake = {"id": 0, "status": "PENDING", "gift_url": parsed["url"], "gift_title": parsed["title"],
+            "amount": parsed["amount"], "creator_name": message.from_user.full_name or "Тест",
+            "expires_at": iso(utcnow() + timedelta(hours=DEAL_HOURS))}
+    kb = keyboard_for(fake)
+    hidden = (f"{escape(fake['creator_name'])} предлагает вам\n{fake['amount']} ⭐ за подарок "
+              f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a>.\n\nПредложение действует ещё 5 ч.')
+    tests = [("1 оффер как в боте", dict(text=offer_text(fake), reply_markup=kb)),
+             ("2 скрытая ссылка, как у другого бота", dict(text=hidden, reply_markup=kb))]
+    results, sent_ids = [], []
+    for name, kw in tests:
+        try:
+            m = await bot.send_message(chat_id=message.chat.id, business_connection_id=cid, **kw)
+            sent_ids.append(m.message_id)
+            results.append(f"✅ {name}")
+        except Exception as exc:
+            results.append(f"❌ {name}: {str(exc)[:60]}")
+        await asyncio.sleep(3)
+    logging.info("DIAG5 (%s, %s): %s", parsed["url"], parsed["amount"], " | ".join(results))
+    try:
+        if sent_ids:
+            await bot.delete_business_messages(business_connection_id=cid, message_ids=sent_ids)
+    except Exception as exc:
+        logging.warning("DIAG5: не удалось удалить тестовые сообщения: %r", exc)
+    try:
+        await bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id,
+                                    text="DIAG5\n" + "\n".join(results), business_connection_id=cid, parse_mode=None)
+    except Exception as exc:
+        logging.warning("DIAG5: не удалось показать результат: %r", exc)
+
+
 @router.business_message(F.text)
 async def create_business_offer(message: Message, bot: Bot):
     connection_id = getattr(message, "business_connection_id", None)
