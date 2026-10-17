@@ -8,14 +8,9 @@ from html import escape
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
-try:
-    from dotenv import load_dotenv
-except ImportError:  # python-dotenv не установлен — берём переменные из окружения хостинга
-    def load_dotenv(*_a, **_k):
-        return False
+from dotenv import load_dotenv
 
 from database import (
     init_db, create_deal, get_deal, update_deal, set_setting, get_setting,
@@ -27,10 +22,6 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
 DEAL_HOURS = int(os.getenv("DEAL_HOURS", "24"))
-# edit    — Business: бот редактирует ваше сообщение (безопаснее, без PEER_FLOOD)
-# send    — бот отправляет НОВОЕ сообщение, ваше исходное остаётся
-# replace — бот отправляет новое сообщение и удаляет ваше исходное
-OFFER_MODE = os.getenv("OFFER_MODE", "send").strip().lower()
 if not BOT_TOKEN:
     raise RuntimeError("Укажите BOT_TOKEN в .env")
 
@@ -40,19 +31,6 @@ AMOUNT_RE = re.compile(r"(?<!\w)(\d{1,12})\s*(?:⭐️?|stars?)", re.I)
 
 def utcnow():
     return datetime.now(timezone.utc)
-
-# --- Защита от PEER_FLOOD ---------------------------------------------------
-FLOOD_PAUSE_MIN = int(os.getenv("FLOOD_PAUSE_MIN", "30"))   # пауза после PEER_FLOOD
-CHAT_COOLDOWN_SEC = int(os.getenv("CHAT_COOLDOWN_SEC", "20"))  # мин. интервал между офферами в одном чате
-_send_paused_until = None
-_last_send_by_chat = {}
-
-def sending_paused():
-    return _send_paused_until is not None and utcnow() < _send_paused_until
-
-def chat_throttled(chat_id):
-    last = _last_send_by_chat.get(chat_id)
-    return last is not None and (utcnow() - last).total_seconds() < CHAT_COOLDOWN_SEC
 
 def iso(dt):
     return dt.astimezone(timezone.utc).isoformat()
@@ -89,8 +67,6 @@ EMOJI_GIFT = "6032937473162614352"
 EMOJI_STAR = "5406812184359507637"
 EMOJI_ACCEPT = "5776375003280838798"
 EMOJI_CANCEL = "5778527486270770928"
-EMOJI_BTN_TRANSFER = "5875465628285931233"  # иконка кнопки «Передать»
-EMOJI_BTN_VERIFY = "5874960879434338403"    # иконка кнопки «Проверить»
 
 def tg_emoji(custom_id, fallback):
     return f'<tg-emoji emoji-id="{custom_id}">{fallback}</tg-emoji>'
@@ -137,10 +113,8 @@ def keyboard_for(d, recipient=None):
         username = (recipient or "").strip().lstrip("@")
         transfer_url = f"https://t.me/{username}" if username else "https://t.me/"
         return InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="Передать", url=transfer_url,
-                                 icon_custom_emoji_id=EMOJI_BTN_TRANSFER),
-            InlineKeyboardButton(text="Проверить", callback_data=f"verify:{deal_id}",
-                                 icon_custom_emoji_id=EMOJI_BTN_VERIFY)
+            InlineKeyboardButton(text="🎁 Передать", url=transfer_url),
+            InlineKeyboardButton(text="🔎 Проверить", callback_data=f"verify:{deal_id}")
         ]])
     return None
 
@@ -148,9 +122,6 @@ async def is_admin(uid):
     return uid in ADMIN_IDS or await list_admins(uid)
 
 async def render(bot, d):
-    # The ticker can see a new deal before send_message returns its message_id.
-    if not d or not d.get("message_id") or int(d["message_id"]) <= 0:
-        return
     recipient = await get_setting("recipient_username")
     try:
         kwargs = {
@@ -164,11 +135,6 @@ async def render(bot, d):
         if d.get("business_connection_id"):
             kwargs["business_connection_id"] = d["business_connection_id"]
         await bot.edit_message_text(**kwargs)
-    except TelegramBadRequest as exc:
-        # Telegram rejects identical edits; this is harmless for the countdown.
-        if "message is not modified" in str(exc).lower():
-            return
-        logging.warning("Не удалось обновить сделку %s: %s", d["id"], exc)
     except Exception as exc:
         logging.warning("Не удалось обновить сделку %s: %s", d["id"], exc)
 
@@ -227,27 +193,14 @@ async def deladmin_cmd(message: Message):
     await message.answer("✅ Администратор удалён.")
 
 async def _create_offer(message: Message, bot: Bot, *, business_connection_id: str | None = None):
-    global _send_paused_until
     if not message.from_user or message.from_user.is_bot:
         return
     # Ignore private messages only in the ordinary bot chat workflow.
     if not business_connection_id and message.chat.type == "private":
         return
-    # Business-режим: бот пишет ОТ ИМЕНИ вашего личного аккаунта, поэтому
-    # реагируем только на сообщения админов, иначе Telegram режет аккаунт за спам.
-    if business_connection_id and not await is_admin(message.from_user.id):
-        return
     parsed = parse_offer(message.text or "")
     if not parsed:
         return
-    if not business_connection_id or OFFER_MODE in ("send", "replace"):
-        if sending_paused():
-            logging.warning("Отправка на паузе (PEER_FLOOD) до %s — оффер пропущен", _send_paused_until)
-            return
-        if chat_throttled(message.chat.id):
-            logging.info("Chat %s: слишком частые офферы, пропуск", message.chat.id)
-            return
-        _last_send_by_chat[message.chat.id] = utcnow()
 
     expiry = utcnow() + timedelta(hours=DEAL_HOURS)
     creator = message.from_user.full_name or message.from_user.username or "Пользователь"
@@ -265,71 +218,21 @@ async def _create_offer(message: Message, bot: Bot, *, business_connection_id: s
     d = await get_deal(deal_id)
     recipient = await get_setting("recipient_username")
 
-    try:
-        if business_connection_id and OFFER_MODE == "edit":
-            # Не отправляем новое сообщение (его считают спамом с вашего аккаунта),
-            # а превращаем ваше исходное сообщение в оффер.
-            await bot.edit_message_text(
-                chat_id=message.chat.id,
-                message_id=message.message_id,
-                text=offer_text(d),
-                reply_markup=keyboard_for(d, recipient),
-                disable_web_page_preview=False,
-                business_connection_id=business_connection_id,
-            )
-            sent = message  # message_id исходного сообщения сохраняется как id оффера
-        elif business_connection_id:
-            sent = await bot.send_message(
-                chat_id=message.chat.id,
-                text=offer_text(d),
-                reply_markup=keyboard_for(d, recipient),
-                disable_web_page_preview=False,
-                business_connection_id=business_connection_id,
-            )
-        else:
-            sent = await message.answer(
-                offer_text(d),
-                reply_markup=keyboard_for(d, recipient),
-                disable_web_page_preview=False,
-            )
-    except Exception as exc:
-        # PEER_FLOOD is a Telegram-side anti-spam/rate restriction.
-        # Do not retry automatically; repeated sends can make the restriction worse.
-        error_text = str(exc).upper()
-        if "PEER_FLOOD" in error_text:
-            _send_paused_until = utcnow() + timedelta(minutes=FLOOD_PAUSE_MIN)
-            logging.error("PEER_FLOOD details (business=%s): %r", bool(business_connection_id), exc)
-            logging.error(
-                "Telegram PEER_FLOOD while sending offer; no retry. "
-                "Deal %s marked CANCELLED. Pause sending and wait for Telegram restriction to clear.",
-                deal_id,
-            )
-        else:
-            logging.exception("Could not send offer for deal %s; marking it CANCELLED", deal_id)
-        await update_deal(
-            deal_id,
-            status="CANCELLED",
-            verification_note=("Telegram blocked the send with PEER_FLOOD." if "PEER_FLOOD" in error_text
-                              else f"Send failed: {str(exc)[:300]}"),
+    if business_connection_id:
+        sent = await bot.send_message(
+            chat_id=message.chat.id,
+            text=offer_text(d),
+            reply_markup=keyboard_for(d, recipient),
+            disable_web_page_preview=False,
+            business_connection_id=business_connection_id,
         )
-        return
-
-    # Save a real Telegram message ID only after Telegram confirms the send.
+    else:
+        sent = await message.answer(
+            offer_text(d),
+            reply_markup=keyboard_for(d, recipient),
+            disable_web_page_preview=False,
+        )
     await update_deal(deal_id, message_id=sent.message_id)
-
-    # replace-режим: исходное сообщение удаляем только ПОСЛЕ успешной отправки оффера,
-    # чтобы при ошибке сообщение не пропало.
-    if OFFER_MODE == "replace" or not business_connection_id:
-        try:
-            if business_connection_id:
-                await bot.delete_business_messages(
-                    business_connection_id=business_connection_id,
-                    message_ids=[message.message_id],
-                )
-            elif OFFER_MODE == "replace":
-                await bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
-        except Exception as exc:
-            logging.warning("Не удалось удалить исходное сообщение %s: %r", message.message_id, exc)
 
 
 @router.message(F.text)
@@ -347,64 +250,56 @@ async def create_business_offer(message: Message, bot: Bot):
 
 @router.callback_query(F.data.startswith(("accept:", "reject:", "verify:")))
 async def callbacks(call: CallbackQuery, bot: Bot):
-    # Acknowledge immediately; database and edit calls may take longer than Telegram's callback window.
     try:
-        await call.answer()
-    except Exception as exc:
-        logging.warning("Callback acknowledgement failed (continuing): %r", exc)
-
-    try:
-        action, raw_id = (call.data or "").split(":", 1)
+        action, raw_id = call.data.split(":", 1)
         deal_id = int(raw_id)
     except Exception:
-        logging.warning("Invalid callback data: %r", call.data)
-        return
-
+        return await call.answer("Некорректное действие.", show_alert=True)
     d = await get_deal(deal_id)
     if not d:
-        logging.error(
-            "Deal not found for callback: deal_id=%s callback_message_id=%s chat_id=%s. "
-            "Check persistent DB/volume and DB_PATH.",
-            deal_id,
-            getattr(getattr(call, "message", None), "message_id", None),
-            getattr(getattr(call, "message", None), "chat", None).id
-            if getattr(call, "message", None) and getattr(call.message, "chat", None) else None,
-        )
-        return
+        return await call.answer("Сделка не найдена.", show_alert=True)
 
     if d["status"] == "PENDING" and utcnow() >= datetime.fromisoformat(d["expires_at"]):
         await update_deal(deal_id, status="EXPIRED")
         await render(bot, await get_deal(deal_id))
-        return
+        return await call.answer("Срок действия предложения истёк.", show_alert=True)
 
     if action == "accept":
         if d["status"] != "PENDING":
-            return
-        # Creator is allowed to accept their own offer as requested.
+            return await call.answer("Предложение уже обработано.", show_alert=True)
+        if call.from_user.id == d["creator_id"]:
+            return await call.answer("Нельзя принять собственное предложение.", show_alert=True)
         await update_deal(deal_id, status="ACCEPTED", accepted_by=call.from_user.id)
         await render(bot, await get_deal(deal_id))
-        return
+        return await call.answer("Предложение принято.")
 
     if action == "reject":
         if d["status"] != "PENDING":
-            return
+            return await call.answer("Предложение уже обработано.", show_alert=True)
         new_status = "CANCELLED" if call.from_user.id == d["creator_id"] else "REJECTED"
         await update_deal(deal_id, status=new_status, rejected_by=call.from_user.id)
         await render(bot, await get_deal(deal_id))
-        return
+        return await call.answer("Сделка отменена.")
 
     if action == "verify":
         if d["status"] != "ACCEPTED":
-            return
+            return await call.answer("Проверка доступна после принятия.", show_alert=True)
         recipient = await get_setting("recipient_username")
         result = await verify_gift_transfer(d["gift_url"], recipient, d)
         if result.status == VerificationStatus.CONFIRMED:
             await update_deal(deal_id, status="COMPLETED", verification_note=result.message)
             await render(bot, await get_deal(deal_id))
-        elif result.status == VerificationStatus.NOT_FOUND:
-            logging.info("Gift transfer not found yet for deal_id=%s", deal_id)
-        else:
-            logging.warning("Could not verify transfer for deal_id=%s: %s", deal_id, result.message)
+            return await call.answer("Передача подтверждена.", show_alert=True)
+        if result.status == VerificationStatus.NOT_FOUND:
+            target = f"@{recipient.lstrip('@')}" if recipient else "указанному получателю"
+            return await call.answer(
+                f"Подарок ещё не передан. Передайте подарок на {target} и нажмите «Проверить» снова.",
+                show_alert=True
+            )
+        return await call.answer(
+            "Не удалось достоверно проверить передачу. Сделка не отмечена завершённой.",
+            show_alert=True
+        )
 
 async def ticker(bot):
     while True:
@@ -412,8 +307,7 @@ async def ticker(bot):
         await expire_pending_deals(now.isoformat())
         deals = await get_active_deals()
         for d in deals:
-            if d.get("message_id") and int(d["message_id"]) > 0:
-                await render(bot, d)  # refreshes countdown every minute
+            await render(bot, d)  # refreshes countdown every minute
         await asyncio.sleep(60)
 
 async def main():

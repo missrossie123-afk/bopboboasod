@@ -1,11 +1,7 @@
 import aiosqlite
 import os
 
-# Keep the default DB beside this module rather than depending on the process
-# working directory. On hosted platforms, set DB_PATH to a file on a persistent
-# mounted disk; otherwise the database can still disappear on redeploy.
-_DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deals.sqlite3")
-DB_PATH = os.path.abspath(os.getenv("DB_PATH", _DEFAULT_DB_PATH))
+DB_PATH = os.getenv("DB_PATH", "deals.sqlite3")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS deals (
