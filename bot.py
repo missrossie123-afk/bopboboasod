@@ -100,19 +100,23 @@ def offer_text(d):
     star_emoji = tg_emoji(EMOJI_STAR, "⭐")
     accept_emoji = tg_emoji(EMOJI_ACCEPT, "✅")
     cancel_emoji = tg_emoji(EMOJI_CANCEL, "❌")
-    gift_link = f'<a href="{escape(d["gift_url"], quote=True)}">{escape(d["gift_title"])}</a>'
+    # Скрытая ссылка (<a href>) с другим текстом вызывает PEER_FLOOD — выводим адрес как есть.
+    gift_title = escape(d["gift_title"])
+    gift_url = escape(d["gift_url"])
     amount = f'{int(d["amount"]):,}'.replace(",", " ")
     user = escape(d["creator_name"] or "Пользователь")
     if d["status"] == "PENDING":
         return (
             f"{gift_emoji} <b>{user} предлагает вам</b>\n"
-            f"<b>{amount} {star_emoji} за подарок {gift_link}</b>\n\n"
+            f"<b>{amount} {star_emoji} за подарок {gift_title}</b>\n"
+            f"{gift_url}\n\n"
             f"Предложение действует ещё <b>{remaining(d['expires_at'])}</b>."
         )
     if d["status"] == "ACCEPTED":
         return (
             f"{accept_emoji} <b>Предложение принято</b>\n\n"
-            f"{amount} {star_emoji} за подарок {gift_link}\n\n"
+            f"{amount} {star_emoji} за подарок {gift_title}\n"
+            f"{gift_url}\n\n"
             "Ожидается фактическая передача подарка. "
             "После независимой проверки передачи статус сделки обновится."
         )
@@ -123,7 +127,7 @@ def offer_text(d):
     if d["status"] == "EXPIRED":
         return "⌛ <b>Срок действия предложения истёк.</b>"
     if d["status"] == "COMPLETED":
-        return f"{accept_emoji} <b>Передача подарка {gift_link} подтверждена проверкой.</b>"
+        return f"{accept_emoji} <b>Передача подарка {gift_title} подтверждена проверкой.</b>\n{gift_url}"
     return "Статус сделки неизвестен."
 
 def keyboard_for(d, recipient=None):
