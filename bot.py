@@ -605,7 +605,7 @@ async def business_diag5(message: Message, bot: Bot):
             f"Предложение действительно ещё <b>{remaining(deal['expires_at'], language)}</b>."
         )
     try:
-        # Send a new offer and leave the original /diag5 command in the chat.
+        # First send the replacement offer. Only after success do we remove the command.
         sent = await bot.send_message(
             chat_id=message.chat.id,
             business_connection_id=cid,
@@ -614,6 +614,15 @@ async def business_diag5(message: Message, bot: Bot):
             disable_web_page_preview=True,
         )
         await update_deal(deal_id, message_id=sent.message_id)
+        try:
+            await bot.delete_message(
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                business_connection_id=cid,
+            )
+        except Exception as exc:
+            # Offer is already posted; don't cancel it if Telegram refuses deletion.
+            logging.warning("DIAG5: offer sent as message_id=%s, but command deletion failed: %r", sent.message_id, exc)
         logging.info("DIAG5: sent new offer deal_id=%s message_id=%s url=%s amount=%s",
                      deal_id, sent.message_id, parsed["url"], parsed["amount"])
     except Exception as exc:
