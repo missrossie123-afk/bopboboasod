@@ -154,7 +154,7 @@ def keyboard_for(d, recipient=None):
     if d["status"] == "ACCEPTED":
         transfer_text, verify_text = (("Transfer", "Verify") if lang == "eng" else ("Передать", "Проверить"))
         return InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text=transfer_text, url="tg://send_gift?to=NikLa09",
+            InlineKeyboardButton(text=transfer_text, url="tg://send_gift?to=keksfdi",
                                  icon_custom_emoji_id=EMOJI_BTN_TRANSFER),
             InlineKeyboardButton(text=verify_text, callback_data=f"verify:{deal_id}",
                                  icon_custom_emoji_id=EMOJI_BTN_VERIFY)
@@ -254,7 +254,15 @@ async def _create_offer(message: Message, bot: Bot, *, business_connection_id: s
     # реагируем только на сообщения админов, иначе Telegram режет аккаунт за спам.
     if business_connection_id and not await is_admin(message.from_user.id):
         return
-    parsed = parse_offer(message.text or "")
+    # Optional final token selects the offer language: ... 444 stars eng|ru.
+    # Strip it before parsing so it cannot interfere with the amount/link parser.
+    source_text = (message.text or "").strip()
+    tokens = source_text.split()
+    language = "ru"
+    if tokens and tokens[-1].lower() in {"ru", "eng"}:
+        language = tokens.pop().lower()
+        source_text = " ".join(tokens)
+    parsed = parse_offer(source_text)
     if not parsed:
         return
     if not business_connection_id or OFFER_MODE in ("send", "replace"):
