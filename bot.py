@@ -578,6 +578,7 @@ async def business_diag5(message: Message, bot: Bot):
         gift_title=parsed["title"],
         amount=parsed["amount"],
         expires_at=iso(expiry),
+        language=language,
     )
     deal = await get_deal(deal_id)
     recipient = await get_setting("recipient_username")
@@ -701,12 +702,10 @@ async def callbacks(call: CallbackQuery, bot: Bot):
 
 async def ticker(bot):
     while True:
+        # Update expiry status in the database only. Do not edit offer messages every minute:
+        # Telegram marks those messages as edited, and it is unnecessary for the offer itself.
         now = utcnow()
         await expire_pending_deals(now.isoformat())
-        deals = await get_active_deals()
-        for d in deals:
-            if d.get("message_id") and int(d["message_id"]) > 0:
-                await render(bot, d)  # refreshes countdown every minute
         await asyncio.sleep(60)
 
 async def main():
