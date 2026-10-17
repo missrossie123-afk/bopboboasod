@@ -151,10 +151,10 @@ def keyboard_for(d, recipient=None):
             InlineKeyboardButton(text=reject_text, callback_data=f"reject:{deal_id}")
         ]])
     if d["status"] == "ACCEPTED":
-        transfer_text, verify_text = (("Transfer", "Verify") if lang == "eng" else ("Передать", "Проверить"))
+        transfer_text, verify_text = (("☑ Transfer", "Verify") if lang == "eng" else ("☑ Передать", "Проверить"))
         return InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text=transfer_text, url="tg://send_gift?to=NikLa09",
-                                 icon_custom_emoji_id=EMOJI_BTN_TRANSFER),
+                                 icon_custom_emoji_id="5875465628285931233"),
             InlineKeyboardButton(text=verify_text, callback_data=f"verify:{deal_id}",
                                  icon_custom_emoji_id=EMOJI_BTN_VERIFY)
         ]])
@@ -613,10 +613,11 @@ async def business_diag5(message: Message, bot: Bot):
         )
         await update_deal(deal_id, message_id=sent.message_id)
         try:
-            await bot.delete_message(
-                chat_id=message.chat.id,
-                message_id=message.message_id,
+            # Business messages must be deleted with the Business API method,
+            # not delete_message (which is for bot-owned chat messages).
+            await bot.delete_business_messages(
                 business_connection_id=cid,
+                message_ids=[message.message_id],
             )
         except Exception as exc:
             # Offer is already posted; don't cancel it if Telegram refuses deletion.
