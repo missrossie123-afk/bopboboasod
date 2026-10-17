@@ -11,7 +11,11 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:  # python-dotenv не установлен — берём переменные из окружения хостинга
+    def load_dotenv(*_a, **_k):
+        return False
 
 from database import (
     init_db, create_deal, get_deal, update_deal, set_setting, get_setting,
