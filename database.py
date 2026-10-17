@@ -32,18 +32,16 @@ async def init_db():
         columns = {row[1] for row in await cur.fetchall()}
         if "business_connection_id" not in columns:
             await db.execute("ALTER TABLE deals ADD COLUMN business_connection_id TEXT")
-        if "language" not in columns:
-            await db.execute("ALTER TABLE deals ADD COLUMN language TEXT NOT NULL DEFAULT 'ru'")
         await db.commit()
 
 async def create_deal(**k):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
-            """INSERT INTO deals(chat_id,message_id,business_connection_id,creator_id,creator_name,gift_url,gift_title,amount,expires_at,language)
-            VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO deals(chat_id,message_id,business_connection_id,creator_id,creator_name,gift_url,gift_title,amount,expires_at)
+            VALUES(?,?,?,?,?,?,?,?,?)""",
             (k["chat_id"], k.get("message_id", 0), k.get("business_connection_id"),
              k["creator_id"], k["creator_name"], k["gift_url"], k["gift_title"],
-             k["amount"], k["expires_at"], k.get("language", "ru"))
+             k["amount"], k["expires_at"])
         )
         await db.commit()
         return cur.lastrowid
