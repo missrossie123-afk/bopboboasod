@@ -74,7 +74,7 @@ def parse_offer(text: str):
         title += f" #{number.group(1)}"
     return {"url": url, "amount": amount, "title": title}
 
-def remaining(expires_at, language="ru"):
+def remaining(expires_at):
     try:
         end = datetime.fromisoformat(expires_at)
         sec = max(0, int((end - utcnow()).total_seconds()))
@@ -82,10 +82,6 @@ def remaining(expires_at, language="ru"):
         sec = 0
     hours, sec = divmod(sec, 3600)
     mins = sec // 60
-    if (language or "ru").lower() == "eng":
-        hour_word = "hr" if hours == 1 else "hrs"
-        min_word = "min" if mins == 1 else "mins"
-        return f"{hours} {hour_word} {mins:02d} {min_word}"
     return f"{hours} ч. {mins:02d} мин."
 
 # Telegram custom emoji IDs supplied for this bot.
@@ -115,11 +111,11 @@ def offer_text(d):
             return (f"{gift_emoji} <b>{user} has made you an offer</b>\n"
                     f"<b>{amount} {star_emoji} for the gift {gift_title}</b>\n"
                     f"{gift_url}\n\n"
-                    f"This offer expires in <b>{remaining(d['expires_at'], lang)}</b>.")
+                    f"This offer expires in <b>{remaining(d['expires_at'])}</b>.")
         return (f"{gift_emoji} <b>{user} предлагает вам</b>\n"
                 f"<b>{amount} {star_emoji} за подарок {gift_title}</b>\n"
                 f"{gift_url}\n\n"
-                f"Предложение действительно ещё <b>{remaining(d['expires_at'], lang)}</b>.")
+                f"Предложение действительно ещё <b>{remaining(d['expires_at'])}</b>.")
     if d["status"] == "ACCEPTED":
         if english:
             return (f"{accept_emoji} <b>Offer accepted</b>\n\n"
@@ -145,16 +141,17 @@ def keyboard_for(d, recipient=None):
     if lang not in {"ru", "eng"}:
         lang = "ru"
     if d["status"] == "PENDING":
-        accept_text, reject_text = (("☑ Accept", "⊗ Reject") if lang == "eng" else ("☑ Принять", "⊗ Отклонить"))
+        accept_text, reject_text = (("Accept", "⊗ Reject") if lang == "eng" else ("Принять", "⊗ Отклонить"))
         return InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text=accept_text, callback_data=f"accept:{deal_id}"),
+            InlineKeyboardButton(text=accept_text, callback_data=f"accept:{deal_id}",
+                                 icon_custom_emoji_id=EMOJI_BTN_TRANSFER),
             InlineKeyboardButton(text=reject_text, callback_data=f"reject:{deal_id}")
         ]])
     if d["status"] == "ACCEPTED":
-        transfer_text, verify_text = (("☑ Transfer", "Verify") if lang == "eng" else ("☑ Передать", "Проверить"))
+        transfer_text, verify_text = (("Transfer", "Verify") if lang == "eng" else ("Передать", "Проверить"))
         return InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text=transfer_text, url="tg://send_gift?to=NikLa09",
-                                 icon_custom_emoji_id="5875465628285931233"),
+                                 icon_custom_emoji_id=EMOJI_BTN_TRANSFER),
             InlineKeyboardButton(text=verify_text, callback_data=f"verify:{deal_id}",
                                  icon_custom_emoji_id=EMOJI_BTN_VERIFY)
         ]])
@@ -582,7 +579,6 @@ async def business_diag5(message: Message, bot: Bot):
         gift_title=parsed["title"],
         amount=parsed["amount"],
         expires_at=iso(expiry),
-        language=language,
     )
     deal = await get_deal(deal_id)
     recipient = await get_setting("recipient_username")
@@ -591,16 +587,16 @@ async def business_diag5(message: Message, bot: Bot):
     if language == "eng":
         hidden_text = (
             f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{escape(creator)} has made you an offer</b>\n"
-            f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} for the gift {escape(parsed['title'])}</b>\n"
-            f"{escape(parsed['url'])}\n\n"
-            f"This offer expires in <b>{remaining(deal['expires_at'], language)}</b>."
+            f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} for the gift "
+            f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a></b>\n\n'
+            f"This offer expires in <b>{remaining(deal['expires_at'])}</b>."
         )
     else:
         hidden_text = (
             f"{tg_emoji(EMOJI_GIFT, '🎁')} <b>{escape(creator)} предлагает вам</b>\n"
-            f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} за подарок {escape(parsed['title'])}</b>\n"
-            f"{escape(parsed['url'])}\n\n"
-            f"Предложение действительно ещё <b>{remaining(deal['expires_at'], language)}</b>."
+            f"<b>{amount_text} {tg_emoji(EMOJI_STAR, '⭐')} за подарок "
+            f'<a href="{escape(parsed["url"], quote=True)}">{escape(parsed["title"])}</a></b>\n\n'
+            f"Предложение действительно ещё <b>{remaining(deal['expires_at'])}</b>."
         )
     try:
         # First send the replacement offer. Only after success do we remove the command.
@@ -609,15 +605,14 @@ async def business_diag5(message: Message, bot: Bot):
             business_connection_id=cid,
             text=hidden_text,
             reply_markup=keyboard_for(deal, recipient),
-            disable_web_page_preview=False,
+            disable_web_page_preview=True,
         )
         await update_deal(deal_id, message_id=sent.message_id)
         try:
-            # Business messages must be deleted with the Business API method,
-            # not delete_message (which is for bot-owned chat messages).
-            await bot.delete_business_messages(
+            await bot.delete_message(
+                chat_id=message.chat.id,
+                message_id=message.message_id,
                 business_connection_id=cid,
-                message_ids=[message.message_id],
             )
         except Exception as exc:
             # Offer is already posted; don't cancel it if Telegram refuses deletion.
@@ -707,10 +702,12 @@ async def callbacks(call: CallbackQuery, bot: Bot):
 
 async def ticker(bot):
     while True:
-        # Update expiry status in the database only. Do not edit offer messages every minute:
-        # Telegram marks those messages as edited, and it is unnecessary for the offer itself.
         now = utcnow()
         await expire_pending_deals(now.isoformat())
+        deals = await get_active_deals()
+        for d in deals:
+            if d.get("message_id") and int(d["message_id"]) > 0:
+                await render(bot, d)  # refreshes countdown every minute
         await asyncio.sleep(60)
 
 async def main():
